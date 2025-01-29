@@ -1,5 +1,4 @@
-.idea/
 __pycache__/
-instance/
 logs/
-Backend/venv/
+.venv/
+.env

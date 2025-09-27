@@ -1,0 +1,86 @@
+version: 1
+disable_existing_loggers: False
+
+formatters:
+  basic:
+    (): app.config.CustomFormatter
+    format: '{asctime} [{levelname:<8}] {name}: {message}'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+    style: '{'
+
+  file_formatter:
+    format: '[{asctime}] [{levelname:<8}] {name}: {message}'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+    style: '{'
+
+handlers:
+  rotating_file:
+    class: logging.handlers.TimedRotatingFileHandler
+    formatter: file_formatter
+    when: W0
+    interval: 1
+    backupCount: 4
+    encoding: utf-8
+
+  console:
+    class: logging.StreamHandler
+    formatter: basic
+    stream: ext://sys.stdout
+
+  error_file:
+    class: logging.FileHandler
+    formatter: file_formatter
+    encoding: utf-8
+    mode: w
+    level: ERROR
+
+loggers:
+  app:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+    
+  app.database:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+
+  app.auth:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+
+  app.routers.auth:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+    
+  app.routers.admin:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+    
+  app.routers.users:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+    
+  app.services.assignment:
+    level: INFO
+    handlers: [rotating_file, error_file, console]
+    propagate: no
+
+  sqlalchemy.engine:
+    level: WARNING
+    handlers: [rotating_file, error_file]
+    propagate: no
+
+  uvicorn:
+    level: INFO
+    handlers: [console]
+    propagate: no
+    
+  uvicorn.access:
+    level: INFO
+    handlers: [rotating_file]
+    propagate: no

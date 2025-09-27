@@ -1,6 +1,11 @@
-fastapi==0.115.6
-uvicorn==0.32.1
-pydantic==2.10.3
-sqlmodel==0.0.22
-python-dotenv==1.0.1
-asyncmy==0.2.10
+fastapi==0.117.1
+uvicorn==0.37.0
+pydantic==2.11.9
+sqlmodel==0.0.25
+python-dotenv==1.1.1
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.20
+PyYAML==6.0.3
+pydantic-settings==2.11.0
+asyncpg==0.30.0

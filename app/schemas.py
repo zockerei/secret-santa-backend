@@ -1,6 +1,7 @@
 from sqlmodel import SQLModel, Field
 from typing import Optional
 from datetime import datetime
+from datetime import date as date_type
 from .models import EventStatus
 
 
@@ -37,23 +38,25 @@ class UserUpdate(SQLModel):
 class EventCreate(SQLModel):
     """Model for event creation"""
     event_name: str = Field(max_length=45)
-    date: datetime
+    date: date_type
 
 
 class EventUpdate(SQLModel):
     """Model for event updates"""
     event_name: Optional[str] = Field(None, max_length=45)
-    date: Optional[datetime] = None
+    date: Optional[date_type] = None
 
 
 class EventResponse(SQLModel):
     """Model for event responses"""
     id: int
     event_name: str
-    date: datetime
+    date: date_type
     status: EventStatus
     created_at: datetime
     participant_count: Optional[int] = None
+    is_participant: Optional[bool] = None
+    has_message: Optional[bool] = None
 
 
 class EventDetailResponse(EventResponse):
@@ -97,7 +100,7 @@ class AssignmentResponse(SQLModel):
     """Model for showing gift assignments to users"""
     event_id: int
     event_name: str
-    event_date: datetime
+    event_date: date_type
     recipient_name: str
     recipient_message: Optional[str]
 
@@ -114,3 +117,19 @@ class TokenData(SQLModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
     is_admin: bool = False
+
+
+class ManualAssignment(SQLModel):
+    """Model for manual Secret Santa assignment"""
+    recipient_user_id: int
+    gifter_user_id: int
+
+
+class ManualAssignmentBatch(SQLModel):
+    """Model for batch manual assignments"""
+    assignments: list[ManualAssignment]
+
+
+class AdminParticipantMessageUpdate(SQLModel):
+    """Model for admin updating participant messages"""
+    message: Optional[str] = None

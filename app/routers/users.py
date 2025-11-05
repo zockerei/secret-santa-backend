@@ -1,6 +1,8 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
+import logging
+
 from ..database import get_session
 from ..models import User, Event, Receiver, EventStatus
 from ..schemas import (
@@ -9,6 +11,8 @@ from ..schemas import (
 )
 from ..auth import get_current_user
 from ..services.assignment import check_and_update_event_status
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -56,8 +60,18 @@ async def get_available_events(
         count_result = await session.exec(count_statement)
         participant_count = len(count_result.all())
 
+        # Check if current user is a participant
+        participant_statement = select(Receiver).where(
+            Receiver.user_id == current_user.id,
+            Receiver.event_id == event.id
+        )
+        participant_result = await session.exec(participant_statement)
+        participant = participant_result.first()
+
         event_dict = event.model_dump()
         event_dict["participant_count"] = participant_count
+        event_dict["is_participant"] = bool(participant)
+        event_dict["has_message"] = bool(participant and participant.message) if participant else False
         event_responses.append(EventResponse(**event_dict))
 
     event_responses.sort(key=lambda x: x.created_at, reverse=True)
@@ -77,14 +91,18 @@ async def join_event(
     session: Session = Depends(get_session)
 ):
     """Join an event"""
+    logger.info(f"User {current_user.email} joining event ID: {join_data.event_id}")
+
     event_statement = select(Event).where(Event.id == join_data.event_id)
     event_result = await session.exec(event_statement)
     event = event_result.first()
 
     if not event:
+        logger.warning(f"Join failed: Event ID {join_data.event_id} not found")
         raise HTTPException(status_code=404, detail="Event not found")
 
     if event.status not in [EventStatus.DRAFT, EventStatus.OPEN]:
+        logger.warning(f"Join failed: Event {event.event_name} status is {event.status}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot join event in current status"
@@ -96,6 +114,7 @@ async def join_event(
     )
     participant_result = await session.exec(participant_statement)
     if participant_result.first():
+        logger.warning(f"Join failed: User {current_user.email} already in event ID {join_data.event_id}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Already joined this event"
@@ -112,6 +131,7 @@ async def join_event(
 
     await check_and_update_event_status(session, join_data.event_id)
 
+    logger.info(f"User {current_user.email} successfully joined event {event.event_name}")
     return {"message": "Successfully joined event"}
 
 
@@ -127,14 +147,18 @@ async def update_message(
     session: Session = Depends(get_session)
 ):
     """Update message for an event (only before assignment)"""
+    logger.info(f"User {current_user.email} updating message for event ID: {event_id}")
+
     event_statement = select(Event).where(Event.id == event_id)
     event_result = await session.exec(event_statement)
     event = event_result.first()
 
     if not event:
+        logger.warning(f"Update message failed: Event ID {event_id} not found")
         raise HTTPException(status_code=404, detail="Event not found")
 
     if event.status == EventStatus.ASSIGNED or event.status == EventStatus.CLOSED:
+        logger.warning(f"Update message failed: Event {event.event_name} already assigned/closed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot change message after assignments are made"
@@ -148,6 +172,7 @@ async def update_message(
     participant = participant_result.first()
 
     if not participant:
+        logger.warning(f"Update message failed: User {current_user.email} not in event ID {event_id}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Not a participant in this event"
@@ -158,7 +183,71 @@ async def update_message(
 
     await check_and_update_event_status(session, event_id)
 
+    logger.info(f"User {current_user.email} updated message for event {event.event_name}")
     return {"message": "Message updated successfully"}
+
+
+@router.delete(
+    "/events/{event_id}/leave",
+    summary="Leave an event",
+    description="Remove yourself as a participant from an event (only before assignments)."
+)
+async def leave_event(
+    event_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Leave an event.
+
+    Users can only leave events that haven't been assigned yet.
+    Once assignments are made, only admins can remove participants.
+    """
+    logger.info(f"User {current_user.email} leaving event ID: {event_id}")
+
+    # Verify event exists
+    event_statement = select(Event).where(Event.id == event_id)
+    event_result = await session.exec(event_statement)
+    event = event_result.first()
+
+    if not event:
+        logger.warning(f"Leave failed: Event ID {event_id} not found")
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Check if assignments have been made
+    if event.status in [EventStatus.ASSIGNED, EventStatus.CLOSED]:
+        logger.warning(f"Leave failed: Event {event.event_name} already assigned/closed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot leave event after assignments have been made. Contact an admin."
+        )
+
+    # Find participant record
+    participant_statement = select(Receiver).where(
+        Receiver.user_id == current_user.id,
+        Receiver.event_id == event_id
+    )
+    participant_result = await session.exec(participant_statement)
+    participant = participant_result.first()
+
+    if not participant:
+        logger.warning(f"Leave failed: User {current_user.email} not in event ID {event_id}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You are not participating in this event"
+        )
+
+    # Remove participation
+    await session.delete(participant)
+    await session.commit()
+
+    await check_and_update_event_status(session, event_id)
+
+    logger.info(f"User {current_user.email} successfully left event {event.event_name}")
+    return {
+        "message": "Successfully left event",
+        "event_id": event_id
+    }
 
 
 @router.get(
@@ -172,6 +261,8 @@ async def get_my_assignments(
     session: Session = Depends(get_session)
 ):
     """Get user's gift assignments"""
+    logger.info(f"User {current_user.email} fetching their assignments")
+
     statement = select(Receiver, User, Event).join(
         User, Receiver.user_id == User.id
     ).join(
@@ -194,6 +285,7 @@ async def get_my_assignments(
             recipient_message=receiver.message
         ))
 
+    logger.info(f"User {current_user.email} has {len(assignments)} assignment(s)")
     return assignments
 
 
@@ -229,5 +321,6 @@ async def get_event_status(
         "status": event.status,
         "is_participant": bool(participant),
         "has_message": bool(participant and participant.message) if participant else False,
+        "message": participant.message if participant else None,
         "can_edit_message": event.status in [EventStatus.DRAFT, EventStatus.OPEN] and bool(participant)
     }

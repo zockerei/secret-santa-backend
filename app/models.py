@@ -1,10 +1,16 @@
 from sqlmodel import SQLModel, Field, Relationship
 from typing import Optional, List
 from datetime import datetime, timezone
+from datetime import date as date_type
 from enum import Enum
 import sqlalchemy as sa
 from sqlalchemy import Index, CheckConstraint
 from sqlalchemy.orm import relationship
+
+
+def utc_now() -> datetime:
+    """Return current UTC time as timezone-naive datetime for database compatibility."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class EventStatus(str, Enum):
@@ -16,7 +22,7 @@ class EventStatus(str, Enum):
 
 class User(SQLModel, table=True):
     """User model with proper constraints and indexes"""
-    __tablename__ = "User"
+    __tablename__ = "users"
     __table_args__ = (
         Index('idx_user_email', 'email'),
         Index('idx_user_is_admin', 'is_admin'),
@@ -34,7 +40,7 @@ class User(SQLModel, table=True):
     email: str = Field(max_length=45, nullable=False, unique=True)
     is_admin: bool = Field(default=False, nullable=False, index=True)
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=utc_now,
         nullable=False,
         index=True
     )
@@ -44,7 +50,8 @@ class User(SQLModel, table=True):
         sa_relationship=relationship(
             "Receiver",
             back_populates="user",
-            foreign_keys="[Receiver.user_id]"
+            foreign_keys="[Receiver.user_id]",
+            cascade="all, delete-orphan"
         )
     )
     given_assignments: List["Receiver"] = Relationship(
@@ -52,14 +59,15 @@ class User(SQLModel, table=True):
         sa_relationship=relationship(
             "Receiver",
             back_populates="gifter",
-            foreign_keys="[Receiver.gifter_id]"
+            foreign_keys="[Receiver.gifter_id]",
+            cascade="all, delete-orphan"
         )
     )
 
 
 class EventName(SQLModel, table=True):
     """Event name lookup table for standardized event types"""
-    __tablename__ = "EventName"
+    __tablename__ = "event_names"
     __table_args__ = (
         CheckConstraint('length(name) >= 1', name='check_event_name_not_empty'),
         CheckConstraint('length(name) <= 45', name='check_event_name_max_length'),
@@ -72,38 +80,39 @@ class EventName(SQLModel, table=True):
 
 class Event(SQLModel, table=True):
     """Event model representing Secret Santa events"""
-    __tablename__ = "Event"
+    __tablename__ = "events"
     __table_args__ = (
         Index('idx_event_name_status', 'event_name', 'status'),
         Index('idx_event_date_status', 'date', 'status'),
         Index('idx_event_created_at', 'created_at'),
         Index('idx_event_status', 'status'),
-
-        CheckConstraint('date >= created_at', name='check_event_date_after_creation'),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     event_name: str = Field(
-        foreign_key="EventName.name",
+        foreign_key="event_names.name",
         max_length=45,
         nullable=False,
         index=True
     )
-    date: datetime = Field(nullable=False, index=True)
+    date: date_type = Field(nullable=False, index=True)
     status: EventStatus = Field(default=EventStatus.DRAFT, nullable=False, index=True)
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=utc_now,
         nullable=False,
         index=True
     )
 
     event_name_rel: Optional[EventName] = Relationship(back_populates="events")
-    participants: List["Receiver"] = Relationship(back_populates="event")
+    participants: List["Receiver"] = Relationship(
+        back_populates="event",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
 
 
 class Receiver(SQLModel, table=True):
     """Junction table representing participants and their assignments"""
-    __tablename__ = "Receiver"
+    __tablename__ = "receivers"
     __table_args__ = (
         Index('idx_receiver_event_user', 'event_id', 'user_id'),
         Index('idx_receiver_event_gifter', 'event_id', 'gifter_id'),
@@ -118,9 +127,9 @@ class Receiver(SQLModel, table=True):
         CheckConstraint('gifter_id IS NULL OR gifter_id > 0', name='check_gifter_id_positive_or_null'),
     )
 
-    user_id: int = Field(foreign_key="User.id", primary_key=True)
-    event_id: int = Field(foreign_key="Event.id", primary_key=True)
-    gifter_id: Optional[int] = Field(default=None, foreign_key="User.id", index=True)
+    user_id: int = Field(foreign_key="users.id", primary_key=True)
+    event_id: int = Field(foreign_key="events.id", primary_key=True)
+    gifter_id: Optional[int] = Field(default=None, foreign_key="users.id", index=True)
     message: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text))
 
     user: Optional[User] = Relationship(

@@ -1,8 +1,9 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 from typing import AsyncGenerator
 from sqlmodel import SQLModel
+from sqlmodel.ext.asyncio.session import AsyncSession
 import logging
 
 from .config import settings
@@ -20,8 +21,8 @@ engine = create_async_engine(
 )
 
 async_session = sessionmaker(
-    engine, 
-    class_=AsyncSession, 
+    engine,
+    class_=AsyncSession,
     expire_on_commit=False
 )
 

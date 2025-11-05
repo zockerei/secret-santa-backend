@@ -1,13 +1,15 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select, func
+import logging
+
 from ..database import get_session
 from ..models import User, Event, EventName, Receiver, EventStatus
 from ..schemas import (
     UserResponse, UserCreate, UserUpdate,
     EventCreate, EventResponse, EventUpdate, EventDetailResponse,
     EventNameCreate, EventNameResponse,
-    ParticipantResponse
+    ParticipantResponse, ManualAssignmentBatch, AdminParticipantMessageUpdate
 )
 from ..auth import get_current_admin_user, get_password_hash
 from ..services.assignment import (
@@ -16,6 +18,8 @@ from ..services.assignment import (
     assign_secret_santa,
     get_assignment_history_info
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -48,9 +52,12 @@ async def create_user(
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
+    logger.info(f"Admin {current_admin.email} creating user: {user_data.email}")
+
     statement = select(User).where(User.email == user_data.email)
     result = await session.exec(statement)
     if result.first():
+        logger.warning(f"User creation failed: email already exists - {user_data.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -67,6 +74,7 @@ async def create_user(
     await session.commit()
     await session.refresh(db_user)
 
+    logger.info(f"User created successfully: {user_data.email} (ID: {db_user.id})")
     return UserResponse.model_validate(db_user)
 
 
@@ -78,11 +86,14 @@ async def update_user(
     session: Session = Depends(get_session)
 ):
     """Update user (admin only)"""
+    logger.info(f"Admin {current_admin.email} updating user ID: {user_id}")
+
     statement = select(User).where(User.id == user_id)
     result = await session.exec(statement)
     user = result.first()
 
     if not user:
+        logger.warning(f"Update failed: User ID {user_id} not found")
         raise HTTPException(status_code=404, detail="User not found")
 
     if user_data.name is not None:
@@ -91,6 +102,7 @@ async def update_user(
         email_check = select(User).where(User.email == user_data.email, User.id != user_id)
         email_result = await session.exec(email_check)
         if email_result.first():
+            logger.warning(f"Update failed: email already registered - {user_data.email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
@@ -104,6 +116,7 @@ async def update_user(
     await session.commit()
     await session.refresh(user)
 
+    logger.info(f"User updated successfully: {user.email} (ID: {user_id})")
     return UserResponse.model_validate(user)
 
 
@@ -114,16 +127,21 @@ async def delete_user(
     session: Session = Depends(get_session)
 ):
     """Delete user (admin only)"""
+    logger.info(f"Admin {current_admin.email} deleting user ID: {user_id}")
+
     statement = select(User).where(User.id == user_id)
     result = await session.exec(statement)
     user = result.first()
 
     if not user:
+        logger.warning(f"Delete failed: User ID {user_id} not found")
         raise HTTPException(status_code=404, detail="User not found")
 
+    user_email = user.email
     await session.delete(user)
     await session.commit()
 
+    logger.info(f"User deleted successfully: {user_email} (ID: {user_id})")
     return {"message": "User deleted successfully"}
 
 
@@ -172,7 +190,11 @@ async def get_event_detail(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    participants_statement = select(Receiver, User).join(User).where(Receiver.event_id == event_id)
+    participants_statement = (
+        select(Receiver, User)
+        .join(User, Receiver.user_id == User.id)
+        .where(Receiver.event_id == event_id)
+    )
     participants_result = await session.exec(participants_statement)
     participants_data = participants_result.all()
 
@@ -214,6 +236,8 @@ async def create_event(
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
+    logger.info(f"Admin {current_admin.email} creating event: {event_data.event_name} on {event_data.date}")
+
     name_statement = select(EventName).where(EventName.name == event_data.event_name)
     name_result = await session.exec(name_statement)
     if not name_result.first():
@@ -228,6 +252,8 @@ async def create_event(
     session.add(db_event)
     await session.commit()
     await session.refresh(db_event)
+
+    logger.info(f"Event created successfully: {event_data.event_name} (ID: {db_event.id})")
 
     event_dict = db_event.model_dump()
     event_dict["participant_count"] = 0
@@ -284,16 +310,21 @@ async def delete_event(
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
+    logger.info(f"Admin {current_admin.email} deleting event ID: {event_id}")
+
     statement = select(Event).where(Event.id == event_id)
     result = await session.exec(statement)
     event = result.first()
 
     if not event:
+        logger.warning(f"Delete failed: Event ID {event_id} not found")
         raise HTTPException(status_code=404, detail="Event not found")
 
+    event_name = event.event_name
     await session.delete(event)
     await session.commit()
 
+    logger.info(f"Event deleted successfully: {event_name} (ID: {event_id})")
     return {"message": "Event deleted successfully"}
 
 
@@ -342,6 +373,68 @@ async def assign_event(
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
+    logger.info(f"Admin {current_admin.email} triggering assignment for event ID: {event_id}")
+
+    event_statement = select(Event).where(Event.id == event_id)
+    event_result = await session.exec(event_statement)
+    event = event_result.first()
+
+    if not event:
+        logger.warning(f"Assignment failed: Event ID {event_id} not found")
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    participants_statement = select(Receiver).where(Receiver.event_id == event_id)
+    participants_result = await session.exec(participants_statement)
+    participants = participants_result.all()
+
+    if len(participants) < 2:
+        logger.warning(f"Assignment failed: Event ID {event_id} has only {len(participants)} participants")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Need at least 2 participants to assign"
+        )
+
+    success = await assign_secret_santa(session, event_id, participants)
+
+    if not success:
+        logger.error(f"Assignment algorithm failed for event ID: {event_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to assign Secret Santa pairs"
+        )
+
+    event.status = EventStatus.ASSIGNED
+    await session.commit()
+
+    logger.info(
+        f"Assignment successful for event {event.event_name} (ID: {event_id}), "
+        f"{len(participants)} participants"
+    )
+    return {
+        "message": "Secret Santa pairs assigned successfully",
+        "event_id": event_id,
+        "participants_assigned": len(participants)
+    }
+
+
+@router.post(
+    "/events/{event_id}/assign-manual",
+    summary="Manually assign Secret Santa pairs",
+    description="Set specific gifter-recipient pairs manually instead of automatic assignment."
+)
+async def assign_event_manually(
+    event_id: int,
+    assignments: ManualAssignmentBatch,
+    current_admin: User = Depends(get_current_admin_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Manually assign Secret Santa pairs.
+
+    This allows you to specify exactly who gives to whom.
+    All participants must be included in the assignments.
+    """
+    # Verify event exists
     event_statement = select(Event).where(Event.id == event_id)
     event_result = await session.exec(event_statement)
     event = event_result.first()
@@ -349,6 +442,7 @@ async def assign_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
+    # Get all participants
     participants_statement = select(Receiver).where(Receiver.event_id == event_id)
     participants_result = await session.exec(participants_statement)
     participants = participants_result.all()
@@ -359,21 +453,68 @@ async def assign_event(
             detail="Need at least 2 participants to assign"
         )
 
-    success = await assign_secret_santa(session, event_id, participants)
+    # Validate assignments
+    participant_ids = {p.user_id for p in participants}
+    assignment_recipients = {a.recipient_user_id for a in assignments.assignments}
+    assignment_gifters = {a.gifter_user_id for a in assignments.assignments}
 
-    if not success:
+    # Check all participants are recipients
+    if assignment_recipients != participant_ids:
+        missing = participant_ids - assignment_recipients
+        extra = assignment_recipients - participant_ids
+        error_msg = "Assignment mismatch: "
+        if missing:
+            error_msg += f"Missing recipients: {missing}. "
+        if extra:
+            error_msg += f"Extra recipients not in event: {extra}."
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to assign Secret Santa pairs"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_msg
         )
 
+    # Check all gifters are participants
+    if not assignment_gifters.issubset(participant_ids):
+        invalid = assignment_gifters - participant_ids
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid gifters (not participants): {invalid}"
+        )
+
+    # Check no self-assignments
+    for assignment in assignments.assignments:
+        if assignment.recipient_user_id == assignment.gifter_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Self-assignment not allowed: user {assignment.recipient_user_id}"
+            )
+
+    # Check each person appears as gifter exactly once
+    if len(assignment_gifters) != len(assignments.assignments):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Each participant must be a gifter exactly once"
+        )
+
+    # Apply assignments
+    for assignment in assignments.assignments:
+        receiver_statement = select(Receiver).where(
+            Receiver.event_id == event_id,
+            Receiver.user_id == assignment.recipient_user_id
+        )
+        receiver_result = await session.exec(receiver_statement)
+        receiver = receiver_result.first()
+
+        if receiver:
+            receiver.gifter_id = assignment.gifter_user_id
+
+    # Update event status
     event.status = EventStatus.ASSIGNED
     await session.commit()
 
     return {
-        "message": "Secret Santa pairs assigned successfully",
+        "message": "Manual assignments completed successfully",
         "event_id": event_id,
-        "participants_assigned": len(participants)
+        "assignments_count": len(assignments.assignments)
     }
 
 
@@ -468,7 +609,7 @@ async def get_participants_without_messages(
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
-    participants_statement = select(Receiver, User).join(User).where(
+    participants_statement = select(Receiver, User).join(User, Receiver.user_id == User.id).where(
         Receiver.event_id == event_id,
         Receiver.message.is_(None)
     )
@@ -502,11 +643,14 @@ async def add_participant_to_event(
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
+    logger.info(f"Admin {current_admin.email} adding user ID {user_id} to event ID {event_id}")
+
     event_statement = select(Event).where(Event.id == event_id)
     event_result = await session.exec(event_statement)
     event = event_result.first()
 
     if not event:
+        logger.warning(f"Add participant failed: Event ID {event_id} not found")
         raise HTTPException(status_code=404, detail="Event not found")
 
     user_statement = select(User).where(User.id == user_id)
@@ -514,6 +658,7 @@ async def add_participant_to_event(
     user = user_result.first()
 
     if not user:
+        logger.warning(f"Add participant failed: User ID {user_id} not found")
         raise HTTPException(status_code=404, detail="User not found")
 
     participant_statement = select(Receiver).where(
@@ -522,6 +667,7 @@ async def add_participant_to_event(
     )
     participant_result = await session.exec(participant_statement)
     if participant_result.first():
+        logger.warning(f"Add participant failed: User {user.email} already in event ID {event_id}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User is already participating in this event"
@@ -537,6 +683,7 @@ async def add_participant_to_event(
 
     await check_and_update_event_status(session, event_id)
 
+    logger.info(f"User {user.email} added to event {event.event_name} successfully")
     return {
         "message": f"User {user.name} added to event successfully",
         "user_id": user_id,
@@ -582,3 +729,106 @@ async def remove_participant_from_event(
     await session.commit()
 
     return {"message": "Participant removed successfully"}
+
+
+@router.put(
+    "/events/{event_id}/participants/{user_id}/message",
+    summary="Update participant message",
+    description="Admin can update or clear a participant's message for an event."
+)
+async def update_participant_message(
+    event_id: int,
+    user_id: int,
+    message_data: AdminParticipantMessageUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Update a participant's message (admin only).
+
+    This allows admins to:
+    - Edit participant messages (e.g., fix typos, moderate content)
+    - Add messages for participants who need help
+    - Clear messages by setting to null
+    """
+    # Verify event exists
+    event_statement = select(Event).where(Event.id == event_id)
+    event_result = await session.exec(event_statement)
+    event = event_result.first()
+
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Find the participant
+    participant_statement = select(Receiver).where(
+        Receiver.user_id == user_id,
+        Receiver.event_id == event_id
+    )
+    participant_result = await session.exec(participant_statement)
+    participant = participant_result.first()
+
+    if not participant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not participating in this event"
+        )
+
+    # Update the message
+    participant.message = message_data.message
+    await session.commit()
+
+    return {
+        "message": "Participant message updated successfully",
+        "user_id": user_id,
+        "event_id": event_id,
+        "new_message": message_data.message
+    }
+
+
+@router.delete(
+    "/events/{event_id}/participants/{user_id}/message",
+    summary="Delete participant message",
+    description="Admin can delete/clear a participant's message for an event."
+)
+async def delete_participant_message(
+    event_id: int,
+    user_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Delete a participant's message (admin only).
+
+    Sets the message to null, effectively clearing it.
+    """
+    # Verify event exists
+    event_statement = select(Event).where(Event.id == event_id)
+    event_result = await session.exec(event_statement)
+    event = event_result.first()
+
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Find the participant
+    participant_statement = select(Receiver).where(
+        Receiver.user_id == user_id,
+        Receiver.event_id == event_id
+    )
+    participant_result = await session.exec(participant_statement)
+    participant = participant_result.first()
+
+    if not participant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not participating in this event"
+        )
+
+    # Clear the message
+    participant.message = None
+    await session.commit()
+
+    return {
+        "message": "Participant message deleted successfully",
+        "user_id": user_id,
+        "event_id": event_id
+    }

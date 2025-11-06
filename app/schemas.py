@@ -101,8 +101,10 @@ class AssignmentResponse(SQLModel):
     event_id: int
     event_name: str
     event_date: date_type
+    event_status: EventStatus
     recipient_name: str
     recipient_message: Optional[str]
+    my_message: Optional[str] = None
 
 
 class Token(SQLModel):

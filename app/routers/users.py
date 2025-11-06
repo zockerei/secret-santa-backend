@@ -269,7 +269,7 @@ async def get_my_assignments(
         Event, Receiver.event_id == Event.id
     ).where(
         Receiver.gifter_id == current_user.id,
-        Event.status == EventStatus.ASSIGNED
+        Event.status.in_([EventStatus.ASSIGNED, EventStatus.CLOSED])
     )
 
     result = await session.exec(statement)
@@ -277,12 +277,22 @@ async def get_my_assignments(
 
     assignments = []
     for receiver, recipient_user, event in assignments_data:
+        # Get the current user's own message for this event
+        my_receiver_statement = select(Receiver).where(
+            Receiver.user_id == current_user.id,
+            Receiver.event_id == event.id
+        )
+        my_receiver_result = await session.exec(my_receiver_statement)
+        my_receiver = my_receiver_result.first()
+
         assignments.append(AssignmentResponse(
             event_id=event.id,
             event_name=event.event_name,
             event_date=event.date,
+            event_status=event.status,
             recipient_name=recipient_user.name,
-            recipient_message=receiver.message
+            recipient_message=receiver.message,
+            my_message=my_receiver.message if my_receiver else None
         ))
 
     logger.info(f"User {current_user.email} has {len(assignments)} assignment(s)")
@@ -314,7 +324,7 @@ async def get_event_status(
     participant_result = await session.exec(participant_statement)
     participant = participant_result.first()
 
-    return {
+    response = {
         "event_id": event.id,
         "event_name": event.event_name,
         "event_date": event.date,
@@ -324,3 +334,23 @@ async def get_event_status(
         "message": participant.message if participant else None,
         "can_edit_message": event.status in [EventStatus.DRAFT, EventStatus.OPEN] and bool(participant)
     }
+
+    # Include assignment information for assigned/closed events
+    if participant and event.status in [EventStatus.ASSIGNED, EventStatus.CLOSED]:
+        assignment_statement = select(Receiver, User).join(
+            User, Receiver.user_id == User.id
+        ).where(
+            Receiver.gifter_id == current_user.id,
+            Receiver.event_id == event_id
+        )
+        assignment_result = await session.exec(assignment_statement)
+        assignment_data = assignment_result.first()
+
+        if assignment_data:
+            receiver, recipient_user = assignment_data
+            response["assignment"] = {
+                "recipient_name": recipient_user.name,
+                "recipient_message": receiver.message
+            }
+
+    return response

@@ -1,5 +1,5 @@
 import random
-from typing import List, Dict
+from typing import List, Dict, Optional, Set
 from sqlmodel import Session, select
 import logging
 
@@ -39,11 +39,72 @@ async def check_and_update_event_status(session: Session, event_id: int) -> bool
     return False
 
 
-async def assign_secret_santa(session: Session, event_id: int, participants: List[Receiver]) -> bool:
+def _find_valid_assignment(user_ids: List[int], forbidden: Dict[int, Set[int]]) -> Optional[List[int]]:
+    """
+    Find a valid Secret Santa assignment using backtracking.
+    Returns a list where result[i] is the recipient for user_ids[i].
+    """
+    n = len(user_ids)
+    assignment = [-1] * n
+    used = [False] * n
+
+    def backtrack(pos: int) -> bool:
+        if pos == n:
+            return True
+
+        gifter = user_ids[pos]
+        forbidden_set = forbidden.get(gifter, set())
+
+        # Try each possible recipient
+        indices = list(range(n))
+        random.shuffle(indices)  # Randomize to get different valid solutions
+
+        for recipient_idx in indices:
+            recipient = user_ids[recipient_idx]
+
+            # Check constraints
+            if used[recipient_idx]:
+                continue
+            if gifter == recipient:  # No self-gifting
+                continue
+            if recipient in forbidden_set:  # Not in forbidden list
+                continue
+
+            # Try this assignment
+            assignment[pos] = recipient
+            used[recipient_idx] = True
+
+            if backtrack(pos + 1):
+                return True
+
+            # Backtrack
+            assignment[pos] = -1
+            used[recipient_idx] = False
+
+        return False
+
+    if backtrack(0):
+        return assignment
+    return None
+
+
+async def assign_secret_santa(
+    session: Session,
+    event_id: int,
+    participants: List[Receiver],
+    history_event_ids: Optional[List[int]] = None
+) -> bool:
     """
     Assign Secret Santa pairs using an algorithm that avoids recent assignments.
     Each person gives to exactly one person and receives from exactly one person.
-    Avoids assigning someone they had in the last 2 events with the same event name.
+
+    Args:
+        session: Database session
+        event_id: Current event ID
+        participants: List of participants to assign
+        history_event_ids: Optional list of event IDs to check for history.
+                          If None, uses last 2 events with same event name.
+                          If empty list [], no history checking.
     """
     if len(participants) < 2:
         logger.warning(
@@ -58,30 +119,51 @@ async def assign_secret_santa(session: Session, event_id: int, participants: Lis
     if not current_event:
         return False
 
-    history_statement = select(Event, Receiver).join(
-        Receiver, Event.id == Receiver.event_id
-    ).where(
-        Event.event_name == current_event.event_name,
-        Event.id != event_id,
-        Event.status == EventStatus.ASSIGNED,
-        Receiver.gifter_id.is_not(None)
-    ).order_by(Event.created_at.desc())
-
-    history_result = await session.exec(history_statement)
-    history_data = history_result.all()
-
     forbidden_assignments = {}
-    events_processed = set()
-    event_count = 0
 
-    for event, receiver in history_data:
-        if event.id not in events_processed:
-            events_processed.add(event.id)
-            event_count += 1
-            if event_count > 2:  # Only consider last 2 events
-                break
+    # Build forbidden assignments based on history
+    if history_event_ids is None:
+        # Default behavior: use last 2 events with same event name
+        history_statement = select(Event, Receiver).join(
+            Receiver, Event.id == Receiver.event_id
+        ).where(
+            Event.event_name == current_event.event_name,
+            Event.id != event_id,
+            Event.status == EventStatus.ASSIGNED,
+            Receiver.gifter_id.is_not(None)
+        ).order_by(Event.created_at.desc())
 
-        if event_count <= 2:  # Within last 2 events
+        history_result = await session.exec(history_statement)
+        history_data = history_result.all()
+
+        events_processed = set()
+        event_count = 0
+
+        for event, receiver in history_data:
+            if event.id not in events_processed:
+                events_processed.add(event.id)
+                event_count += 1
+                if event_count > 2:  # Only consider last 2 events
+                    break
+
+            if event_count <= 2:  # Within last 2 events
+                gifter_id = receiver.gifter_id
+                recipient_id = receiver.user_id
+
+                if gifter_id not in forbidden_assignments:
+                    forbidden_assignments[gifter_id] = set()
+                forbidden_assignments[gifter_id].add(recipient_id)
+
+    elif len(history_event_ids) > 0:
+        # Use specified event IDs for history
+        history_statement = select(Receiver).where(
+            Receiver.event_id.in_(history_event_ids),
+            Receiver.gifter_id.is_not(None)
+        )
+        history_result = await session.exec(history_statement)
+        history_data = history_result.all()
+
+        for receiver in history_data:
             gifter_id = receiver.gifter_id
             recipient_id = receiver.user_id
 
@@ -89,46 +171,23 @@ async def assign_secret_santa(session: Session, event_id: int, participants: Lis
                 forbidden_assignments[gifter_id] = set()
             forbidden_assignments[gifter_id].add(recipient_id)
 
+    # If history_event_ids is empty list, forbidden_assignments stays empty
+
     user_ids = [p.user_id for p in participants]
 
-    max_attempts = 1000
-    best_assignment = None
-    best_violations = float('inf')
+    # Try to find a valid assignment using backtracking
+    assignment = _find_valid_assignment(user_ids, forbidden_assignments)
 
-    for attempt in range(max_attempts):
-        recipients = user_ids.copy()
-        random.shuffle(recipients)
+    if assignment is None:
+        logger.error(
+            f"Could not find valid assignment for event {event_id}. "
+            f"Participants: {len(participants)}, Forbidden pairs: {sum(len(v) for v in forbidden_assignments.values())}"
+        )
+        return False
 
-        violations = 0
-        valid_assignment = True
-
-        for i, gifter_id in enumerate(user_ids):
-            recipient_id = recipients[i]
-
-            if gifter_id == recipient_id:
-                violations += 1
-                valid_assignment = False
-
-            if (gifter_id in forbidden_assignments and
-                    recipient_id in forbidden_assignments[gifter_id]):
-                violations += 1
-                valid_assignment = False
-
-        if valid_assignment:
-            best_assignment = recipients
-            break
-
-        if violations < best_violations:
-            best_violations = violations
-            best_assignment = recipients
-
-    if best_assignment is None:
-        best_assignment = user_ids[1:] + [user_ids[0]]
-
-    assignments = dict(zip(user_ids, best_assignment))
-
-    for participant in participants:
-        recipient_id = assignments[participant.user_id]
+    # Apply the assignments
+    for i, participant in enumerate(participants):
+        recipient_id = assignment[i]
         for recipient_participant in participants:
             if recipient_participant.user_id == recipient_id:
                 recipient_participant.gifter_id = participant.user_id

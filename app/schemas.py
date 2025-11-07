@@ -135,3 +135,8 @@ class ManualAssignmentBatch(SQLModel):
 class AdminParticipantMessageUpdate(SQLModel):
     """Model for admin updating participant messages"""
     message: Optional[str] = None
+
+
+class AssignmentRequest(SQLModel):
+    """Model for assignment request with optional history events"""
+    history_event_ids: Optional[list[int]] = None

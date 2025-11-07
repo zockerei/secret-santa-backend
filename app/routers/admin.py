@@ -9,7 +9,8 @@ from ..schemas import (
     UserResponse, UserCreate, UserUpdate,
     EventCreate, EventResponse, EventUpdate, EventDetailResponse,
     EventNameCreate, EventNameResponse,
-    ParticipantResponse, ManualAssignmentBatch, AdminParticipantMessageUpdate
+    ParticipantResponse, ManualAssignmentBatch, AdminParticipantMessageUpdate,
+    AssignmentRequest
 )
 from ..auth import get_current_admin_user, get_password_hash
 from ..services.assignment import (
@@ -366,14 +367,18 @@ async def create_event_name(
 @router.post(
     "/events/{event_id}/assign",
     summary="Assign Secret Santa pairs",
-    description="Manually triggers Secret Santa assignment for an event."
+    description="Triggers Secret Santa assignment. Can specify events to avoid repeats."
 )
 async def assign_event(
     event_id: int,
+    assignment_request: AssignmentRequest = None,
     current_admin: User = Depends(get_current_admin_user),
     session: Session = Depends(get_session)
 ):
     logger.info(f"Admin {current_admin.email} triggering assignment for event ID: {event_id}")
+
+    if assignment_request is None:
+        assignment_request = AssignmentRequest()
 
     event_statement = select(Event).where(Event.id == event_id)
     event_result = await session.exec(event_statement)
@@ -394,7 +399,12 @@ async def assign_event(
             detail="Need at least 2 participants to assign"
         )
 
-    success = await assign_secret_santa(session, event_id, participants)
+    success = await assign_secret_santa(
+        session,
+        event_id,
+        participants,
+        history_event_ids=assignment_request.history_event_ids
+    )
 
     if not success:
         logger.error(f"Assignment algorithm failed for event ID: {event_id}")
@@ -597,6 +607,74 @@ async def get_assignment_history(
         raise HTTPException(status_code=404, detail="Event not found")
 
     return history
+
+
+@router.get("/events/{event_id}/matching-participant-events")
+async def get_events_with_matching_participants(
+    event_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Find all events that have the exact same participants as the specified event.
+    Useful for avoiding repeat assignments across recurring events.
+    """
+    # Get current event
+    event_statement = select(Event).where(Event.id == event_id)
+    event_result = await session.exec(event_statement)
+    event = event_result.first()
+
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Get participants of the current event
+    participants_statement = select(Receiver.user_id).where(Receiver.event_id == event_id)
+    participants_result = await session.exec(participants_statement)
+    current_participants = set(participants_result.all())
+
+    if len(current_participants) == 0:
+        return {
+            "event_id": event_id,
+            "participant_count": 0,
+            "matching_events": []
+        }
+
+    # Get all other events with assignments (assigned or closed)
+    all_events_statement = select(Event).where(
+        Event.id != event_id,
+        Event.status.in_([EventStatus.ASSIGNED, EventStatus.CLOSED])
+    )
+    all_events_result = await session.exec(all_events_statement)
+    all_events = all_events_result.all()
+
+    matching_events = []
+
+    for other_event in all_events:
+        # Get participants of this event
+        other_participants_statement = select(Receiver.user_id).where(
+            Receiver.event_id == other_event.id
+        )
+        other_participants_result = await session.exec(other_participants_statement)
+        other_participants = set(other_participants_result.all())
+
+        # Check if participant sets match exactly
+        if current_participants == other_participants:
+            matching_events.append({
+                "event_id": other_event.id,
+                "event_name": other_event.event_name,
+                "event_date": other_event.date,
+                "status": other_event.status
+            })
+
+    # Sort by date (most recent first)
+    matching_events.sort(key=lambda x: x["event_date"], reverse=True)
+
+    return {
+        "event_id": event_id,
+        "participant_count": len(current_participants),
+        "matching_events": matching_events,
+        "matching_count": len(matching_events)
+    }
 
 
 @router.get(

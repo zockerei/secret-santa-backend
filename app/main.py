@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+from contextlib import asynccontextmanager
 
 from .config import settings, setup_logging
 from .database import init_db
@@ -9,6 +10,16 @@ from .routers import auth, admin, users
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown events"""
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    await init_db()
+    logger.info("Application startup completed")
+    yield
+
 
 app = FastAPI(
     title=settings.app_name,
@@ -39,7 +50,8 @@ app = FastAPI(
     debug=settings.debug,
     contact={
         "name": "Secret Santa API",
-    }
+    },
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -53,14 +65,6 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(users.router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on startup"""
-    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    await init_db()
-    logger.info("Application startup completed")
 
 
 @app.get(

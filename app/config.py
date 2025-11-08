@@ -23,9 +23,9 @@ class Settings(BaseSettings):
 
     access_token_expire_minutes: int = 30
 
-    initial_admin_email: str | None = "admin@admin.com"
-    initial_admin_password: str | None = "admin"
-    initial_admin_name: str = "admin"
+    initial_admin_email: str
+    initial_admin_password: str
+    initial_admin_name: str
 
     class Config:
         env_file = ".env"

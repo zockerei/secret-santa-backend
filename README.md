@@ -42,43 +42,70 @@ Create a file named `.env` in the `instance` directory with the following variab
 
 ## Setup and Configuration
 
-Setup varies depending how you want to host the application. Example below for a docker-compose that can be used and for
-hosting it on an unraid NAS.
+### Quick Start (Unraid/Docker)
 
-### Docker-Compose
+```bash
+# 1. Clone repository
+cd /mnt/user/appdata/
+git clone https://github.com/yourusername/secret-santa-backend.git
+cd secret-santa-backend
 
-The network `br0` is used if you want to use a reverse proxy (npm for example) and host the application on unraid.
-Normally not needed
+# 2. Create .env file (see .env.example)
+nano .env
 
-```yaml
-services:
-  app:
-    image: python:3.12-slim
-    container_name: secret_santa
-    working_dir: /app
-    volumes:
-      - /mnt/user/appdata/secret-santa:/app
-    command: sh -c "pip install --no-cache-dir -r requirements.txt && python app.py"
-    build:
-      context: /mnt/user/appdata/secret-santa
-      dockerfile: Dockerfile
-    networks:
-      - br0
+# 3. Deploy
+docker-compose up -d
 
-networks:
-  br0:
-    external: true
+# 4. Create admin user
+docker exec -it secret-santa-backend python create_admin.py
 ```
 
-Create a `instance/.env` file with the following structure:
+### Environment Configuration
+
+Create a `.env` file with:
 
 ```env
-SECRET_KEY=secret_key (16 characters)
-ADMIN_NAME=admin_name
-ADMIN_PASSWORD=password
-FLASK_RUN_PORT=your_port (default for flask is 5000)
-FLASK_ENV=production (or development, testing)
-FLASK_DEBUG=0 (or 1 to enable debugging)
+# Database (external PostgreSQL)
+DATABASE_URL=postgresql+asyncpg://user:password@192.168.0.12:5432/secret_santa
+
+# Security
+SECRET_KEY=your-very-long-secret-key-here
+
+# Network (br0 static IP)
+BACKEND_IP=192.168.0.14
+
+# CORS
+CORS_ORIGINS=["http://192.168.0.15:3000"]
+
+# Optional
+LOG_LEVEL=INFO
+ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
 
-Change the `config/logging_config.yaml` file if needed
+### Documentation
+
+- **Quick Start:** See [SETUP_UNRAID.md](SETUP_UNRAID.md)
+- **Detailed Guide:** See [DEPLOYMENT.md](DEPLOYMENT.md)
+- **Docker Setup:** See [DOCKER_SETUP.md](DOCKER_SETUP.md)
+- **Quick Answers:** See [QUICK_ANSWERS.md](QUICK_ANSWERS.md)
+
+### Network Architecture
+
+```
+┌─────────────────────────────────────┐
+│         br0 Network                  │
+├─────────────────────────────────────┤
+│  PostgreSQL  → 192.168.0.12:5432    │
+│  Backend     → 192.168.0.14:8000    │
+│  Frontend    → 192.168.0.15:3000    │
+└─────────────────────────────────────┘
+```
+
+### Logging
+
+Logging is automatically configured:
+- **Console:** Colored output via `docker logs`
+- **Files:** Persisted in `./logs/` directory
+- **Rotation:** Weekly, keeps 4 weeks of logs
+
+See `logging_config.yaml` for configuration

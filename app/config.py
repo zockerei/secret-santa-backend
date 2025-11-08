@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    cors_origins: list[str]
 
     access_token_expire_minutes: int = 30
 

@@ -3,7 +3,7 @@ services:
     container_name: secret-santa-backend
     restart: unless-stopped
     
-    image: ghcr.io/zockerei/secret-santa-backend:latest
+    image: ghcr.io/zockerei/secret-santa-backend:main
     pull_policy: always
     
     environment:

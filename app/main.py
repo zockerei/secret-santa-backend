@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title=settings.app_name,
     description="""
-    ## Secret Santa Gift Exchange Backend API
+    ## Secret Santa Backend API
 
     A comprehensive backend system for managing Secret Santa gift exchanges with intelligent assignment algorithms
     and admin controls.

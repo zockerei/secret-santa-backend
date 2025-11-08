@@ -39,10 +39,6 @@ app = FastAPI(
     debug=settings.debug,
     contact={
         "name": "Secret Santa API",
-        "email": "admin@example.com"
-    },
-    license_info={
-        "name": "MIT License"
     }
 )
 

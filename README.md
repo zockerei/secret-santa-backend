@@ -53,11 +53,8 @@ cd secret-santa-backend
 # 2. Create .env file (see .env.example)
 nano .env
 
-# 3. Deploy
+# 3. Deploy (admin user will be created automatically on first startup)
 docker-compose up -d
-
-# 4. Create admin user
-docker exec -it secret-santa-backend python create_admin.py
 ```
 
 ### Environment Configuration
@@ -71,6 +68,11 @@ DATABASE_URL=postgresql+asyncpg://user:password@192.168.0.12:5432/secret_santa
 # Security
 SECRET_KEY=your-very-long-secret-key-here
 
+# Initial Admin Account (created automatically on first startup)
+INITIAL_ADMIN_EMAIL=admin@example.com
+INITIAL_ADMIN_PASSWORD=your-secure-password
+INITIAL_ADMIN_NAME=Admin
+
 # Network (br0 static IP)
 BACKEND_IP=192.168.0.14
 
@@ -81,6 +83,8 @@ CORS_ORIGINS=["http://192.168.0.15:3000"]
 LOG_LEVEL=INFO
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 ```
+
+**Important:** The admin user is created automatically on first startup if the credentials are provided in the `.env` file. You should change the password after first login!
 
 ### Documentation
 

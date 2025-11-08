@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 from typing import AsyncGenerator
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 import logging
 
@@ -45,6 +45,61 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             logger.debug("Database session closed")
 
 
+async def create_initial_admin():
+    """
+    Creates an initial admin user if credentials are provided in environment
+    variables and no admin exists yet.
+    """
+    from .models import User
+    from .auth import get_password_hash
+
+    if not settings.initial_admin_email or not settings.initial_admin_password:
+        logger.info("No initial admin credentials provided, skipping admin creation")
+        return
+
+    try:
+        async with async_session() as session:
+            # Check if any admin already exists
+            statement = select(User).where(User.is_admin.is_(True))
+            result = await session.exec(statement)
+            existing_admin = result.first()
+
+            if existing_admin:
+                logger.info(f"Admin user already exists: {existing_admin.email}")
+                return
+
+            # Check if user with this email exists
+            statement = select(User).where(User.email == settings.initial_admin_email)
+            result = await session.exec(statement)
+            existing_user = result.first()
+
+            if existing_user:
+                logger.warning(
+                    f"User with email {settings.initial_admin_email} exists but is not admin. "
+                    "Not creating admin account."
+                )
+                return
+
+            # Create the admin user
+            hashed_password = get_password_hash(settings.initial_admin_password)
+            admin_user = User(
+                name=settings.initial_admin_name,
+                email=settings.initial_admin_email,
+                password_hash=hashed_password,
+                is_admin=True
+            )
+
+            session.add(admin_user)
+            await session.commit()
+            await session.refresh(admin_user)
+
+            logger.info(f"✓ Initial admin user created: {admin_user.email}")
+
+    except Exception as e:
+        logger.error(f"Failed to create initial admin user: {e}")
+        raise
+
+
 async def init_db():
     """
     Initialize database by creating all tables.
@@ -60,6 +115,9 @@ async def init_db():
                 logger.info("Database initialized successfully")
             else:
                 logger.error("Database connection test failed")
+
+        await create_initial_admin()
+
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise

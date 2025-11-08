@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     access_token_expire_minutes: int = 30
 
+    initial_admin_email: str | None = None
+    initial_admin_password: str | None = None
+    initial_admin_name: str = "admin"
+
     class Config:
         env_file = ".env"
         case_sensitive = False

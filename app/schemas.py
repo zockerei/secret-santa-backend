@@ -35,6 +35,18 @@ class UserUpdate(SQLModel):
     is_admin: Optional[bool] = None
 
 
+class UserProfileUpdate(SQLModel):
+    """Model for users updating their own profile"""
+    name: Optional[str] = Field(None, max_length=45)
+    email: Optional[str] = Field(None, max_length=45)
+
+
+class UserPasswordUpdate(SQLModel):
+    """Model for users updating their own password"""
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
 class EventCreate(SQLModel):
     """Model for event creation"""
     event_name: str = Field(max_length=45)

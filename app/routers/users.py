@@ -7,9 +7,9 @@ from ..database import get_session
 from ..models import User, Event, Receiver, EventStatus
 from ..schemas import (
     EventResponse, ParticipantJoin, ParticipantUpdate,
-    AssignmentResponse, UserResponse
+    AssignmentResponse, UserResponse, UserProfileUpdate, UserPasswordUpdate
 )
-from ..auth import get_current_user
+from ..auth import get_current_user, verify_password, get_password_hash
 from ..services.assignment import check_and_update_event_status
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,90 @@ router = APIRouter(prefix="/users", tags=["Users"])
 )
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     return UserResponse.model_validate(current_user)
+
+
+@router.put(
+    "/me",
+    response_model=UserResponse,
+    summary="Update current user profile",
+    description="Updates the current authenticated user's name and/or email."
+)
+async def update_current_user_profile(
+    profile_update: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Update current user's profile (name and email)"""
+    logger.info(f"User {current_user.email} updating their profile")
+    
+    # Check if at least one field is being updated
+    if profile_update.name is None and profile_update.email is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one field (name or email) must be provided"
+        )
+    
+    # Check if email is already taken by another user
+    if profile_update.email and profile_update.email != current_user.email:
+        email_check_statement = select(User).where(User.email == profile_update.email)
+        email_check_result = await session.exec(email_check_statement)
+        if email_check_result.first():
+            logger.warning(f"Profile update failed: Email {profile_update.email} already in use")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email address already in use"
+            )
+    
+    # Update fields
+    if profile_update.name is not None:
+        current_user.name = profile_update.name
+    if profile_update.email is not None:
+        current_user.email = profile_update.email
+    
+    session.add(current_user)
+    await session.commit()
+    await session.refresh(current_user)
+    
+    logger.info(f"User profile updated successfully: {current_user.email}")
+    return UserResponse.model_validate(current_user)
+
+
+@router.put(
+    "/me/password",
+    summary="Update current user password",
+    description="Updates the current authenticated user's password."
+)
+async def update_current_user_password(
+    password_update: UserPasswordUpdate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session)
+):
+    """Update current user's password"""
+    logger.info(f"User {current_user.email} attempting to change password")
+    
+    # Verify current password
+    if not verify_password(password_update.current_password, current_user.password_hash):
+        logger.warning(f"Password change failed: incorrect current password for {current_user.email}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    # Check if new password is different from current
+    if verify_password(password_update.new_password, current_user.password_hash):
+        logger.warning(f"Password change failed: new password same as current for {current_user.email}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from current password"
+        )
+    
+    # Update password
+    current_user.password_hash = get_password_hash(password_update.new_password)
+    session.add(current_user)
+    await session.commit()
+    
+    logger.info(f"Password updated successfully for user: {current_user.email}")
+    return {"message": "Password updated successfully"}
 
 
 @router.get(

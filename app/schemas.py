@@ -35,6 +35,11 @@ class UserUpdate(SQLModel):
     is_admin: Optional[bool] = None
 
 
+class AdminPasswordUpdate(SQLModel):
+    """Model for admin updating user passwords (no current password needed)"""
+    new_password: str = Field(min_length=8)
+
+
 class UserProfileUpdate(SQLModel):
     """Model for users updating their own profile"""
     name: Optional[str] = Field(None, max_length=45)

@@ -6,7 +6,7 @@ import logging
 from ..database import get_session
 from ..models import User, Event, EventName, Receiver, EventStatus
 from ..schemas import (
-    UserResponse, UserCreate, UserUpdate,
+    UserResponse, UserCreate, UserUpdate, AdminPasswordUpdate,
     EventCreate, EventResponse, EventUpdate, EventDetailResponse,
     EventNameCreate, EventNameResponse,
     ParticipantResponse, ManualAssignmentBatch, AdminParticipantMessageUpdate,
@@ -119,6 +119,33 @@ async def update_user(
 
     logger.info(f"User updated successfully: {user.email} (ID: {user_id})")
     return UserResponse.model_validate(user)
+
+
+@router.put("/users/{user_id}/password", response_model=dict)
+async def admin_update_user_password(
+    user_id: int,
+    password_data: AdminPasswordUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    session: Session = Depends(get_session)
+):
+    """Update user password as admin (no current password required)"""
+    logger.info(f"Admin {current_admin.email} updating password for user ID: {user_id}")
+
+    statement = select(User).where(User.id == user_id)
+    result = await session.exec(statement)
+    user = result.first()
+
+    if not user:
+        logger.warning(f"Password update failed: User ID {user_id} not found")
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Update password
+    user.password_hash = get_password_hash(password_data.new_password)
+    
+    await session.commit()
+
+    logger.info(f"Password updated successfully for user: {user.email} (ID: {user_id})")
+    return {"message": "Password updated successfully"}
 
 
 @router.delete("/users/{user_id}")

@@ -29,22 +29,25 @@ def migrate():
     config = Config(Path(__file__).resolve().parent.parent / "alembic.ini")
     config.attributes["configure_logger"] = False
 
-    engine = create_engine(make_url(settings.database_url).set(drivername="postgresql+psycopg"))
+    url = make_url(settings.database_url).set(drivername="postgresql+psycopg")
+    engine = create_engine(url)
     try:
         with engine.connect() as connection:
             current = MigrationContext.configure(connection).get_current_revision()
             has_tables = inspect(connection).has_table("users")
 
-        known_revisions = {script.revision for script in ScriptDirectory.from_config(config).walk_revisions()}
-        if has_tables and current not in known_revisions:
-            logger.info(f"Existing database without known migration ({current}), stamping it as baseline")
+        scripts = ScriptDirectory.from_config(config).walk_revisions()
+        if has_tables and current not in {script.revision for script in scripts}:
+            logger.info(f"Database without a known migration ({current}), stamping it as baseline")
             command.stamp(config, BASELINE_REVISION, purge=True)
+            current = BASELINE_REVISION
 
         command.upgrade(config, "head")
 
         with engine.connect() as connection:
             revision = MigrationContext.configure(connection).get_current_revision()
-            differences = compare_metadata(MigrationContext.configure(connection), SQLModel.metadata)
+            context = MigrationContext.configure(connection)
+            differences = compare_metadata(context, SQLModel.metadata)
         if revision != current:
             logger.info(f"Database schema upgraded from revision {current} to {revision}")
         else:

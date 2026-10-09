@@ -9,7 +9,7 @@ from ..schemas import (
     EventResponse, ParticipantJoin, ParticipantUpdate,
     AssignmentResponse, UserResponse, UserProfileUpdate, UserPasswordUpdate
 )
-from ..auth import get_current_user, verify_password, get_password_hash
+from ..auth import get_current_user, verify_password, hash_password
 from ..services.assignment import check_and_update_event_status
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ async def update_current_user_password(
     logger.info(f"User {current_user.email} attempting to change password")
     
     # Verify current password
-    if not verify_password(password_update.current_password, current_user.password_hash):
+    if not await verify_password(password_update.current_password, current_user.password_hash):
         logger.warning(f"Password change failed: incorrect current password for {current_user.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -95,7 +95,7 @@ async def update_current_user_password(
         )
     
     # Check if new password is different from current
-    if verify_password(password_update.new_password, current_user.password_hash):
+    if await verify_password(password_update.new_password, current_user.password_hash):
         logger.warning(f"Password change failed: new password same as current for {current_user.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -103,7 +103,7 @@ async def update_current_user_password(
         )
     
     # Update password
-    current_user.password_hash = get_password_hash(password_update.new_password)
+    current_user.password_hash = await hash_password(password_update.new_password)
     session.add(current_user)
     await session.commit()
     

@@ -9,8 +9,7 @@ from sqlalchemy.orm import relationship
 
 
 def utc_now() -> datetime:
-    """Return current UTC time as timezone-naive datetime for database compatibility."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(timezone.utc)
 
 
 class EventStatus(str, Enum):

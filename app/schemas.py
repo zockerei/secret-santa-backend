@@ -1,15 +1,28 @@
 from sqlmodel import SQLModel, Field
-from typing import Optional
+from typing import Annotated, Optional
+from pydantic import AfterValidator, EmailStr
 from datetime import datetime
 from datetime import date as date_type
 from .models import EventStatus
 
 
+def _check_password_bytes(password: str) -> str:
+    # bcrypt only uses 72 bytes, so longer passwords are refused instead of silently cut off
+    if len(password.encode()) > 72:
+        raise ValueError("Password is too long")
+    return password
+
+
+# Emails are stored lowercase, so logins don't depend on how someone typed theirs
+Email = Annotated[EmailStr, AfterValidator(str.lower)]
+Password = Annotated[str, Field(min_length=8), AfterValidator(_check_password_bytes)]
+
+
 class UserCreate(SQLModel):
     """Model for user creation"""
-    name: str = Field(max_length=45)
-    email: str = Field(max_length=45)
-    password: str = Field(min_length=8)
+    name: str = Field(min_length=1, max_length=45)
+    email: Email = Field(max_length=45)
+    password: Password
 
 
 class UserResponse(SQLModel):
@@ -21,35 +34,35 @@ class UserResponse(SQLModel):
     created_at: datetime
 
 
-class UserLogin(SQLModel):
+class LoginRequest(SQLModel):
     """Model for user login"""
-    email: str
+    email: Annotated[str, AfterValidator(lambda email: email.strip().lower())]
     password: str
 
 
 class UserUpdate(SQLModel):
     """Model for user updates by admin"""
-    name: Optional[str] = Field(None, max_length=45)
-    email: Optional[str] = Field(None, max_length=45)
-    password: Optional[str] = Field(None, min_length=8)
+    name: Optional[str] = Field(None, min_length=1, max_length=45)
+    email: Optional[Email] = Field(None, max_length=45)
+    password: Optional[Password] = None
     is_admin: Optional[bool] = None
 
 
 class AdminPasswordUpdate(SQLModel):
     """Model for admin updating user passwords (no current password needed)"""
-    new_password: str = Field(min_length=8)
+    new_password: Password
 
 
 class UserProfileUpdate(SQLModel):
     """Model for users updating their own profile"""
-    name: Optional[str] = Field(None, max_length=45)
-    email: Optional[str] = Field(None, max_length=45)
+    name: Optional[str] = Field(None, min_length=1, max_length=45)
+    email: Optional[Email] = Field(None, max_length=45)
 
 
 class UserPasswordUpdate(SQLModel):
     """Model for users updating their own password"""
     current_password: str
-    new_password: str = Field(min_length=8)
+    new_password: Password
 
 
 class EventCreate(SQLModel):
@@ -129,13 +142,6 @@ class Token(SQLModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
-
-
-class TokenData(SQLModel):
-    """Token payload data"""
-    user_id: Optional[int] = None
-    email: Optional[str] = None
-    is_admin: bool = False
 
 
 class ManualAssignment(SQLModel):

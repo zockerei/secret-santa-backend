@@ -1,104 +1,66 @@
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.orm import sessionmaker
-from typing import AsyncGenerator
-from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
+"""Database engine, sessions and the startup tasks."""
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
+from typing import Annotated
+
+from fastapi import Depends
+from sqlalchemy import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from .config import settings
 from .migrate import migrate
 
-
 logger = logging.getLogger(__name__)
 
+# The API runs on asyncio, so it always uses the asyncpg driver, whatever the URL says
 engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    pool_size=5,
-    max_overflow=10,
+    make_url(settings.database_url).set(drivername="postgresql+asyncpg"),
     pool_pre_ping=True,
-    pool_recycle=3600,
 )
 
-async_session = sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False
-)
+async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Dependency to get database session.
-    Automatically handles session lifecycle.
-    """
+    """A database session per request. Uncommitted changes are rolled back when it closes."""
     async with async_session() as session:
-        try:
-            logger.debug("Database session created")
-            yield session
-        except Exception as e:
-            logger.error(f"Database session error: {e}")
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-            logger.debug("Database session closed")
+        yield session
+
+
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 async def create_initial_admin():
-    """
-    Creates an initial admin user if credentials are provided in environment
-    variables and no admin exists yet.
-    """
+    """Create the admin from INITIAL_ADMIN_*, if those are set and there is no admin yet."""
+    from .auth import hash_password
     from .models import User
-    from .auth import get_password_hash
 
-    if not settings.initial_admin_email or not settings.initial_admin_password:
-        logger.info("No initial admin credentials provided, skipping admin creation")
+    name, email, password = (
+        settings.initial_admin_name, settings.initial_admin_email, settings.initial_admin_password
+    )
+    if not (name and email and password):
         return
 
-    try:
-        async with async_session() as session:
-            # Check if any admin already exists
-            statement = select(User).where(User.is_admin.is_(True))
-            result = await session.exec(statement)
-            existing_admin = result.first()
+    email = email.strip().lower()
+    async with async_session() as session:
+        if (await session.exec(select(User).where(User.is_admin))).first():
+            return
 
-            if existing_admin:
-                logger.info(f"Admin user already exists: {existing_admin.email}")
-                return
+        if (await session.exec(select(User).where(User.email == email))).first():
+            logger.warning(f"{email} exists but is not an admin, not creating the initial admin")
+            return
 
-            # Check if user with this email exists
-            statement = select(User).where(User.email == settings.initial_admin_email)
-            result = await session.exec(statement)
-            existing_user = result.first()
-
-            if existing_user:
-                logger.warning(
-                    f"User with email {settings.initial_admin_email} exists but is not admin. "
-                    "Not creating admin account."
-                )
-                return
-
-            # Create the admin user
-            hashed_password = get_password_hash(settings.initial_admin_password)
-            admin_user = User(
-                name=settings.initial_admin_name,
-                email=settings.initial_admin_email,
-                password_hash=hashed_password,
-                is_admin=True
-            )
-
-            session.add(admin_user)
-            await session.commit()
-            await session.refresh(admin_user)
-
-            logger.info(f"✓ Initial admin user created: {admin_user.email}")
-
-    except Exception as e:
-        logger.error(f"Failed to create initial admin user: {e}")
-        raise
+        session.add(User(
+            name=name,
+            email=email,
+            password_hash=await hash_password(password),
+            is_admin=True,
+        ))
+        await session.commit()
+        logger.info(f"Initial admin created: {email}")
 
 
 async def init_db():

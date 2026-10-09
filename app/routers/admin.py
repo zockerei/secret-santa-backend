@@ -12,7 +12,7 @@ from ..schemas import (
     ParticipantResponse, ManualAssignmentBatch, AdminParticipantMessageUpdate,
     AssignmentRequest
 )
-from ..auth import get_current_admin_user, get_password_hash
+from ..auth import get_admin_user, hash_password
 from ..services.assignment import (
     check_and_update_event_status,
     get_event_statistics,
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
     description="Returns a list of all registered users."
 )
 async def get_all_users(
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     statement = select(User)
@@ -50,7 +50,7 @@ async def get_all_users(
 )
 async def create_user(
     user_data: UserCreate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     logger.info(f"Admin {current_admin.email} creating user: {user_data.email}")
@@ -64,7 +64,7 @@ async def create_user(
             detail="Email already registered"
         )
 
-    hashed_password = get_password_hash(user_data.password)
+    hashed_password = await hash_password(user_data.password)
     db_user = User(
         name=user_data.name,
         email=user_data.email,
@@ -83,7 +83,7 @@ async def create_user(
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Update user (admin only)"""
@@ -110,7 +110,7 @@ async def update_user(
             )
         user.email = user_data.email
     if user_data.password is not None:
-        user.password_hash = get_password_hash(user_data.password)
+        user.password_hash = await hash_password(user_data.password)
     if user_data.is_admin is not None:
         user.is_admin = user_data.is_admin
 
@@ -125,7 +125,7 @@ async def update_user(
 async def admin_update_user_password(
     user_id: int,
     password_data: AdminPasswordUpdate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Update user password as admin (no current password required)"""
@@ -140,7 +140,7 @@ async def admin_update_user_password(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Update password
-    user.password_hash = get_password_hash(password_data.new_password)
+    user.password_hash = await hash_password(password_data.new_password)
     
     await session.commit()
 
@@ -151,7 +151,7 @@ async def admin_update_user_password(
 @router.delete("/users/{user_id}")
 async def delete_user(
     user_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Delete user (admin only)"""
@@ -180,7 +180,7 @@ async def delete_user(
     description="Returns all events with participant counts."
 )
 async def get_all_events(
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     statement = select(
@@ -208,7 +208,7 @@ async def get_all_events(
 )
 async def get_event_detail(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     event_statement = select(Event).where(Event.id == event_id)
@@ -261,7 +261,7 @@ async def get_event_detail(
 )
 async def create_event(
     event_data: EventCreate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     logger.info(f"Admin {current_admin.email} creating event: {event_data.event_name} on {event_data.date}")
@@ -293,7 +293,7 @@ async def create_event(
 async def update_event(
     event_id: int,
     event_data: EventUpdate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Update event (admin only)"""
@@ -335,7 +335,7 @@ async def update_event(
 )
 async def delete_event(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     logger.info(f"Admin {current_admin.email} deleting event ID: {event_id}")
@@ -358,7 +358,7 @@ async def delete_event(
 
 @router.get("/event-names", response_model=List[EventNameResponse])
 async def get_event_names(
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Get all event names (admin only)"""
@@ -371,7 +371,7 @@ async def get_event_names(
 @router.post("/event-names", response_model=EventNameResponse)
 async def create_event_name(
     event_name_data: EventNameCreate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Create a new event name type (admin only)"""
@@ -399,7 +399,7 @@ async def create_event_name(
 async def assign_event(
     event_id: int,
     assignment_request: AssignmentRequest = None,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     logger.info(f"Admin {current_admin.email} triggering assignment for event ID: {event_id}")
@@ -462,7 +462,7 @@ async def assign_event(
 async def assign_event_manually(
     event_id: int,
     assignments: ManualAssignmentBatch,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -558,7 +558,7 @@ async def assign_event_manually(
 @router.post("/events/{event_id}/close")
 async def close_event(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Close an event (admin only)"""
@@ -578,7 +578,7 @@ async def close_event(
 @router.post("/events/{event_id}/reopen")
 async def reopen_event(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Reopen a closed event (admin only)"""
@@ -609,7 +609,7 @@ async def reopen_event(
 @router.get("/events/{event_id}/statistics")
 async def get_event_stats(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Get detailed event statistics (admin only)"""
@@ -624,7 +624,7 @@ async def get_event_stats(
 @router.get("/events/{event_id}/history")
 async def get_assignment_history(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Get assignment history for this event name (admin only)"""
@@ -639,7 +639,7 @@ async def get_assignment_history(
 @router.get("/events/{event_id}/matching-participant-events")
 async def get_events_with_matching_participants(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -711,7 +711,7 @@ async def get_events_with_matching_participants(
 )
 async def get_participants_without_messages(
     event_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     participants_statement = select(Receiver, User).join(User, Receiver.user_id == User.id).where(
@@ -745,7 +745,7 @@ async def get_participants_without_messages(
 async def add_participant_to_event(
     event_id: int,
     user_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     logger.info(f"Admin {current_admin.email} adding user ID {user_id} to event ID {event_id}")
@@ -800,7 +800,7 @@ async def add_participant_to_event(
 async def remove_participant_from_event(
     event_id: int,
     user_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """Remove a user from an event (admin only)"""
@@ -845,7 +845,7 @@ async def update_participant_message(
     event_id: int,
     user_id: int,
     message_data: AdminParticipantMessageUpdate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -898,7 +898,7 @@ async def update_participant_message(
 async def delete_participant_message(
     event_id: int,
     user_id: int,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(get_admin_user),
     session: Session = Depends(get_session)
 ):
     """

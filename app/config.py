@@ -6,28 +6,24 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    """
-    Application settings loaded from environment variables.
-    """
-
-    app_name: str = "Secret Santa API"
-    app_version: str = "4.2.0"
+    """Application settings, read from environment variables (see .env.example)."""
 
     database_url: str
     secret_key: str
 
-    debug: bool = False
+    # Comma separated, e.g. "https://santa.example.com,http://localhost:5173"
+    cors_origins: str = ""
 
-    cors_origins: list[str]
+    access_token_expire_minutes: int = 7 * 24 * 60
 
-    access_token_expire_minutes: int = 30
+    # Creates this admin on startup if there is no admin yet
+    initial_admin_name: str | None = None
+    initial_admin_email: str | None = None
+    initial_admin_password: str | None = None
 
-    initial_admin_email: str
-    initial_admin_password: str
-    initial_admin_name: str
-
-    class Config:
-        case_sensitive = False
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 settings = Settings()

@@ -1,0 +1,35 @@
+// Secret Santa database schema (from app/models.py)
+// Paste into https://dbdiagram.io to view as an ER diagram
+// Also works on: https://dbml-editor.alswl.com / https://databasediagram.com
+
+Table users {
+  id int [pk, increment]
+  name varchar(50) [not null]
+  email varchar(255) [not null, unique, note: 'Stored lowercase']
+  password_hash varchar(255) [not null, note: 'bcrypt']
+  is_admin boolean [not null, default: false]
+  created_at timestamptz [not null]
+}
+
+Table events {
+  id int [pk, increment]
+  name varchar(100) [not null]
+  date date [not null, note: 'The day of the gift exchange, after it the event is over']
+  drawn_at timestamptz [note: 'NULL until the draw. Until then people can join and leave.']
+  created_at timestamptz [not null]
+}
+
+Table participants {
+  user_id int [not null, ref: > users.id, note: 'ON DELETE CASCADE']
+  event_id int [not null, ref: > events.id, note: 'ON DELETE CASCADE']
+  message text [note: 'Wish list, only shown to this participant and their Secret Santa']
+  recipient_id int [ref: > users.id, note: 'Who this participant gives a gift to, set by the draw. ON DELETE SET NULL']
+
+  indexes {
+    (user_id, event_id) [pk]
+    (event_id, recipient_id) [unique, name: 'uq_participants_event_recipient', note: 'Everybody receives exactly one gift']
+    user_id [name: 'ix_participants_user_id']
+  }
+
+  Note: 'recipient_id <> user_id (ck_participants_not_self)'
+}

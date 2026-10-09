@@ -1,9 +1,8 @@
-from sqlmodel import SQLModel, Field
-from typing import Annotated, Optional
-from pydantic import AfterValidator, EmailStr
-from datetime import datetime
-from datetime import date as date_type
-from .models import EventStatus
+"""Request and response bodies of the API."""
+import datetime as dt
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
 
 def _check_password_bytes(password: str) -> str:
@@ -14,152 +13,114 @@ def _check_password_bytes(password: str) -> str:
 
 
 # Emails are stored lowercase, so logins don't depend on how someone typed theirs
-Email = Annotated[EmailStr, AfterValidator(str.lower)]
+Email = Annotated[EmailStr, Field(max_length=255), AfterValidator(str.lower)]
 Password = Annotated[str, Field(min_length=8), AfterValidator(_check_password_bytes)]
+UserName = Annotated[str, Field(min_length=1, max_length=50)]
+EventName = Annotated[str, Field(min_length=1, max_length=100)]
 
 
-class UserCreate(SQLModel):
-    """Model for user creation"""
-    name: str = Field(min_length=1, max_length=45)
-    email: Email = Field(max_length=45)
-    password: Password
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
 
-class UserResponse(SQLModel):
-    """Model for user responses (without sensitive data)"""
+# Users
+
+class UserResponse(ORMModel):
     id: int
     name: str
     email: str
     is_admin: bool
-    created_at: datetime
+    created_at: dt.datetime
 
 
-class LoginRequest(SQLModel):
-    """Model for user login"""
+class LoginRequest(BaseModel):
     email: Annotated[str, AfterValidator(lambda email: email.strip().lower())]
     password: str
 
 
-class UserUpdate(SQLModel):
-    """Model for user updates by admin"""
-    name: Optional[str] = Field(None, min_length=1, max_length=45)
-    email: Optional[Email] = Field(None, max_length=45)
-    password: Optional[Password] = None
-    is_admin: Optional[bool] = None
-
-
-class AdminPasswordUpdate(SQLModel):
-    """Model for admin updating user passwords (no current password needed)"""
-    new_password: Password
-
-
-class UserProfileUpdate(SQLModel):
-    """Model for users updating their own profile"""
-    name: Optional[str] = Field(None, min_length=1, max_length=45)
-    email: Optional[Email] = Field(None, max_length=45)
-
-
-class UserPasswordUpdate(SQLModel):
-    """Model for users updating their own password"""
-    current_password: str
-    new_password: Password
-
-
-class EventCreate(SQLModel):
-    """Model for event creation"""
-    event_name: str = Field(max_length=45)
-    date: date_type
-
-
-class EventUpdate(SQLModel):
-    """Model for event updates"""
-    event_name: Optional[str] = Field(None, max_length=45)
-    date: Optional[date_type] = None
-
-
-class EventResponse(SQLModel):
-    """Model for event responses"""
-    id: int
-    event_name: str
-    date: date_type
-    status: EventStatus
-    created_at: datetime
-    participant_count: Optional[int] = None
-    is_participant: Optional[bool] = None
-    has_message: Optional[bool] = None
-
-
-class EventDetailResponse(EventResponse):
-    """Detailed event response with participants"""
-    participants: list["ParticipantResponse"] = []
-
-
-class EventNameCreate(SQLModel):
-    """Model for creating event name types"""
-    name: str = Field(max_length=45)
-
-
-class EventNameResponse(SQLModel):
-    """Model for event name responses"""
-    name: str
-
-
-class ParticipantJoin(SQLModel):
-    """Model for users joining events"""
-    event_id: int
-    message: Optional[str] = None
-
-
-class ParticipantUpdate(SQLModel):
-    """Model for updating participant message"""
-    message: str
-
-
-class ParticipantResponse(SQLModel):
-    """Model for participant responses"""
-    user_id: int
-    event_id: int
-    user_name: str
-    message: Optional[str]
-    has_message: bool = False
-    gifter_name: Optional[str] = None
-    is_assigned: bool = False
-
-
-class AssignmentResponse(SQLModel):
-    """Model for showing gift assignments to users"""
-    event_id: int
-    event_name: str
-    event_date: date_type
-    event_status: EventStatus
-    recipient_name: str
-    recipient_message: Optional[str]
-    my_message: Optional[str] = None
-
-
-class Token(SQLModel):
-    """JWT token response"""
+class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
 
 
-class ManualAssignment(SQLModel):
-    """Model for manual Secret Santa assignment"""
-    recipient_user_id: int
-    gifter_user_id: int
+class ProfileUpdate(BaseModel):
+    name: UserName | None = None
+    email: Email | None = None
 
 
-class ManualAssignmentBatch(SQLModel):
-    """Model for batch manual assignments"""
-    assignments: list[ManualAssignment]
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: Password
 
 
-class AdminParticipantMessageUpdate(SQLModel):
-    """Model for admin updating participant messages"""
-    message: Optional[str] = None
+class UserCreate(BaseModel):
+    name: UserName
+    email: Email
+    password: Password
+    is_admin: bool = False
 
 
-class AssignmentRequest(SQLModel):
-    """Model for assignment request with optional history events"""
-    history_event_ids: Optional[list[int]] = None
+class UserUpdate(BaseModel):
+    """Admin update of any user. Fields that are left out stay as they are."""
+    name: UserName | None = None
+    email: Email | None = None
+    password: Password | None = None
+    is_admin: bool | None = None
+
+
+# Events, as a participant sees them
+
+class Recipient(BaseModel):
+    name: str
+    message: str | None
+
+
+class EventResponse(BaseModel):
+    id: int
+    name: str
+    date: dt.date
+    drawn: bool
+    participant_count: int
+    is_participant: bool
+    my_message: str | None
+    # Who the user gives a gift to, once the draw is done
+    recipient: Recipient | None
+
+
+class MessageUpdate(BaseModel):
+    message: Annotated[str, Field(max_length=10_000)] | None
+
+
+# Events, as the admin sees them: who takes part, but never the pairs or the messages
+
+class EventCreate(BaseModel):
+    name: EventName
+    date: dt.date
+
+
+class EventUpdate(BaseModel):
+    name: EventName | None = None
+    date: dt.date | None = None
+
+
+class ParticipantSummary(BaseModel):
+    user_id: int
+    name: str
+    has_message: bool
+
+
+class AdminEventResponse(BaseModel):
+    id: int
+    name: str
+    date: dt.date
+    drawn_at: dt.datetime | None
+    created_at: dt.datetime
+    participants: list[ParticipantSummary]
+
+
+class DrawResponse(BaseModel):
+    event_id: int
+    participant_count: int
+    # How many of each participant's previous events were avoided (fewer than 2 if impossible)
+    history_events_avoided: int

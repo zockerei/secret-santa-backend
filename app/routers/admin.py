@@ -1,939 +1,285 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select, func
+"""
+Managing users and events.
+
+The admin sees who takes part and whether they wrote a wish list, but never the pairs or
+the wish lists themselves, so an admin can take part in the draw like everyone else.
+"""
+import datetime as dt
 import logging
 
-from ..database import get_session
-from ..models import User, Event, EventName, Receiver, EventStatus
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import select
+
+from ..auth import AdminUser, get_admin_user, hash_password
+from ..database import SessionDep
+from ..draw import draw
+from ..models import Event, Participant, User
 from ..schemas import (
-    UserResponse, UserCreate, UserUpdate, AdminPasswordUpdate,
-    EventCreate, EventResponse, EventUpdate, EventDetailResponse,
-    EventNameCreate, EventNameResponse,
-    ParticipantResponse, ManualAssignmentBatch, AdminParticipantMessageUpdate,
-    AssignmentRequest
+    AdminEventResponse, DrawResponse, EventCreate, EventUpdate, ParticipantSummary,
+    UserCreate, UserResponse, UserUpdate,
 )
-from ..auth import get_admin_user, hash_password
-from ..services.assignment import (
-    check_and_update_event_status,
-    get_event_statistics,
-    assign_secret_santa,
-    get_assignment_history_info
-)
+from .common import get_event, get_participant, get_user, require_not_drawn, require_unused_email
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["Admin"])
+router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(get_admin_user)])
 
 
-@router.get(
-    "/users",
-    response_model=List[UserResponse],
-    summary="Get all users",
-    description="Returns a list of all registered users."
-)
-async def get_all_users(
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    statement = select(User)
-    result = await session.exec(statement)
-    users = result.all()
-    return [UserResponse.model_validate(user) for user in users]
+# Users
+
+@router.get("/users", response_model=list[UserResponse], summary="All users")
+async def list_users(session: SessionDep):
+    return (await session.exec(select(User).order_by(User.name))).all()
 
 
 @router.post(
     "/users",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create user",
-    description="Creates a new user account."
+    summary="Create a user",
+    description="There is no public registration, the admin creates every account.",
 )
-async def create_user(
-    user_data: UserCreate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    logger.info(f"Admin {current_admin.email} creating user: {user_data.email}")
+async def create_user(new_user: UserCreate, admin: AdminUser, session: SessionDep):
+    await require_unused_email(session, new_user.email)
+    user = User(
+        name=new_user.name,
+        email=new_user.email,
+        password_hash=await hash_password(new_user.password),
+        is_admin=new_user.is_admin,
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    logger.info(f"Admin {admin.id} created user {user.id} ({user.email})")
+    return user
 
-    statement = select(User).where(User.email == user_data.email)
-    result = await session.exec(statement)
-    if result.first():
-        logger.warning(f"User creation failed: email already exists - {user_data.email}")
+
+@router.patch(
+    "/users/{user_id}",
+    response_model=UserResponse,
+    summary="Change a user",
+    description="Name, email, password or admin rights. Fields that are left out stay as they are.",
+)
+async def update_user(user_id: int, update: UserUpdate, admin: AdminUser, session: SessionDep):
+    user = await get_user(session, user_id)
+    if user.id == admin.id and update.is_admin is False:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            detail="You can't take away your own admin rights",
         )
 
-    hashed_password = await hash_password(user_data.password)
-    db_user = User(
-        name=user_data.name,
-        email=user_data.email,
-        password_hash=hashed_password
-    )
-
-    session.add(db_user)
-    await session.commit()
-    await session.refresh(db_user)
-
-    logger.info(f"User created successfully: {user_data.email} (ID: {db_user.id})")
-    return UserResponse.model_validate(db_user)
-
-
-@router.put("/users/{user_id}", response_model=UserResponse)
-async def update_user(
-    user_id: int,
-    user_data: UserUpdate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Update user (admin only)"""
-    logger.info(f"Admin {current_admin.email} updating user ID: {user_id}")
-
-    statement = select(User).where(User.id == user_id)
-    result = await session.exec(statement)
-    user = result.first()
-
-    if not user:
-        logger.warning(f"Update failed: User ID {user_id} not found")
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if user_data.name is not None:
-        user.name = user_data.name
-    if user_data.email is not None:
-        email_check = select(User).where(User.email == user_data.email, User.id != user_id)
-        email_result = await session.exec(email_check)
-        if email_result.first():
-            logger.warning(f"Update failed: email already registered - {user_data.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        user.email = user_data.email
-    if user_data.password is not None:
-        user.password_hash = await hash_password(user_data.password)
-    if user_data.is_admin is not None:
-        user.is_admin = user_data.is_admin
+    if update.email is not None and update.email != user.email:
+        await require_unused_email(session, update.email)
+        user.email = update.email
+    if update.name is not None:
+        user.name = update.name
+    if update.password is not None:
+        user.password_hash = await hash_password(update.password)
+    if update.is_admin is not None:
+        user.is_admin = update.is_admin
 
     await session.commit()
     await session.refresh(user)
-
-    logger.info(f"User updated successfully: {user.email} (ID: {user_id})")
-    return UserResponse.model_validate(user)
-
-
-@router.put("/users/{user_id}/password", response_model=dict)
-async def admin_update_user_password(
-    user_id: int,
-    password_data: AdminPasswordUpdate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Update user password as admin (no current password required)"""
-    logger.info(f"Admin {current_admin.email} updating password for user ID: {user_id}")
-
-    statement = select(User).where(User.id == user_id)
-    result = await session.exec(statement)
-    user = result.first()
-
-    if not user:
-        logger.warning(f"Password update failed: User ID {user_id} not found")
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Update password
-    user.password_hash = await hash_password(password_data.new_password)
-    
-    await session.commit()
-
-    logger.info(f"Password updated successfully for user: {user.email} (ID: {user_id})")
-    return {"message": "Password updated successfully"}
+    logger.info(f"Admin {admin.id} updated user {user.id}")
+    return user
 
 
-@router.delete("/users/{user_id}")
-async def delete_user(
-    user_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Delete user (admin only)"""
-    logger.info(f"Admin {current_admin.email} deleting user ID: {user_id}")
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a user")
+async def delete_user(user_id: int, admin: AdminUser, session: SessionDep):
+    user = await get_user(session, user_id)
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="You can't delete yourself"
+        )
 
-    statement = select(User).where(User.id == user_id)
-    result = await session.exec(statement)
-    user = result.first()
+    # Deleting them would leave someone without a gift
+    upcoming_drawn = await session.exec(
+        select(Event.id)
+        .join(Participant, Participant.event_id == Event.id)
+        .where(
+            Participant.user_id == user_id,
+            Event.drawn_at.is_not(None),
+            Event.date >= dt.date.today(),
+        )
+    )
+    if upcoming_drawn.first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The user is in an upcoming event that is already drawn, reset that draw first",
+        )
 
-    if not user:
-        logger.warning(f"Delete failed: User ID {user_id} not found")
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user_email = user.email
     await session.delete(user)
     await session.commit()
-
-    logger.info(f"User deleted successfully: {user_email} (ID: {user_id})")
-    return {"message": "User deleted successfully"}
+    logger.info(f"Admin {admin.id} deleted user {user_id} ({user.email})")
 
 
-@router.get(
-    "/events",
-    response_model=List[EventResponse],
-    summary="Get all events",
-    description="Returns all events with participant counts."
-)
-async def get_all_events(
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    statement = select(
-        Event,
-        func.count(Receiver.user_id).label("participant_count")
-    ).outerjoin(Receiver).group_by(Event.id)
+# Events
 
-    result = await session.exec(statement)
-    events_data = result.all()
-
-    events = []
-    for event, participant_count in events_data:
-        event_dict = event.model_dump()
-        event_dict["participant_count"] = participant_count or 0
-        events.append(EventResponse(**event_dict))
-
-    return events
-
-
-@router.get(
-    "/events/{event_id}",
-    response_model=EventDetailResponse,
-    summary="Get event details",
-    description="Returns detailed event information including participants."
-)
-async def get_event_detail(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    participants_statement = (
-        select(Receiver, User)
-        .join(User, Receiver.user_id == User.id)
-        .where(Receiver.event_id == event_id)
+async def with_participants(session: SessionDep, events: list[Event]) -> list[AdminEventResponse]:
+    """The events with their participants: names and whether they wrote a message, nothing else."""
+    rows = await session.exec(
+        select(Participant.event_id, User.id, User.name, Participant.message.is_not(None))
+        .join(User, User.id == Participant.user_id)
+        .where(Participant.event_id.in_([event.id for event in events]))
+        .order_by(User.name)
     )
-    participants_result = await session.exec(participants_statement)
-    participants_data = participants_result.all()
+    participants: dict[int, list[ParticipantSummary]] = {event.id: [] for event in events}
+    for event_id, user_id, name, has_message in rows:
+        participants[event_id].append(
+            ParticipantSummary(user_id=user_id, name=name, has_message=has_message)
+        )
 
-    participants = []
-    for receiver, user in participants_data:
-        gifter_name = None
-        if receiver.gifter_id:
-            gifter_statement = select(User).where(User.id == receiver.gifter_id)
-            gifter_result = await session.exec(gifter_statement)
-            gifter = gifter_result.first()
-            gifter_name = gifter.name if gifter else None
+    return [
+        AdminEventResponse(
+            id=event.id,
+            name=event.name,
+            date=event.date,
+            drawn_at=event.drawn_at,
+            created_at=event.created_at,
+            participants=participants[event.id],
+        )
+        for event in events
+    ]
 
-        participants.append(ParticipantResponse(
-            user_id=user.id,
-            event_id=event_id,
-            user_name=user.name,
-            message=receiver.message,
-            has_message=bool(receiver.message),
-            gifter_name=gifter_name,
-            is_assigned=bool(receiver.gifter_id)
-        ))
 
-    event_dict = event.model_dump()
-    event_dict["participant_count"] = len(participants)
-    event_dict["participants"] = participants
-
-    return EventDetailResponse(**event_dict)
+@router.get("/events", response_model=list[AdminEventResponse], summary="All events, newest first")
+async def list_events(session: SessionDep):
+    events = (await session.exec(select(Event).order_by(Event.date.desc(), Event.id.desc()))).all()
+    return await with_participants(session, list(events))
 
 
 @router.post(
     "/events",
-    response_model=EventResponse,
+    response_model=AdminEventResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create event",
-    description="Creates a new Secret Santa event."
+    summary="Create an event",
 )
-async def create_event(
-    event_data: EventCreate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    logger.info(f"Admin {current_admin.email} creating event: {event_data.event_name} on {event_data.date}")
-
-    name_statement = select(EventName).where(EventName.name == event_data.event_name)
-    name_result = await session.exec(name_statement)
-    if not name_result.first():
-        event_name = EventName(name=event_data.event_name)
-        session.add(event_name)
-
-    db_event = Event(
-        event_name=event_data.event_name,
-        date=event_data.date
-    )
-
-    session.add(db_event)
+async def create_event(new_event: EventCreate, admin: AdminUser, session: SessionDep):
+    event = Event(name=new_event.name, date=new_event.date)
+    session.add(event)
     await session.commit()
-    await session.refresh(db_event)
-
-    logger.info(f"Event created successfully: {event_data.event_name} (ID: {db_event.id})")
-
-    event_dict = db_event.model_dump()
-    event_dict["participant_count"] = 0
-
-    return EventResponse(**event_dict)
+    await session.refresh(event)
+    logger.info(f"Admin {admin.id} created event {event.id} ({event.name}, {event.date})")
+    return (await with_participants(session, [event]))[0]
 
 
-@router.put("/events/{event_id}", response_model=EventResponse)
-async def update_event(
-    event_id: int,
-    event_data: EventUpdate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Update event (admin only)"""
-    statement = select(Event).where(Event.id == event_id)
-    result = await session.exec(statement)
-    event = result.first()
+@router.get("/events/{event_id}", response_model=AdminEventResponse, summary="One event")
+async def read_event(event_id: int, session: SessionDep):
+    event = await get_event(session, event_id)
+    return (await with_participants(session, [event]))[0]
 
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
 
-    if event_data.event_name is not None:
-        name_statement = select(EventName).where(EventName.name == event_data.event_name)
-        name_result = await session.exec(name_statement)
-        if not name_result.first():
-            event_name = EventName(name=event_data.event_name)
-            session.add(event_name)
-        event.event_name = event_data.event_name
-
-    if event_data.date is not None:
-        event.date = event_data.date
+@router.patch("/events/{event_id}", response_model=AdminEventResponse, summary="Change an event")
+async def update_event(event_id: int, update: EventUpdate, admin: AdminUser, session: SessionDep):
+    event = await get_event(session, event_id)
+    if update.name is not None:
+        event.name = update.name
+    if update.date is not None:
+        event.date = update.date
 
     await session.commit()
     await session.refresh(event)
-
-    count_statement = select(func.count(Receiver.user_id)).where(Receiver.event_id == event_id)
-    count_result = await session.exec(count_statement)
-    participant_count = count_result.first() or 0
-
-    event_dict = event.model_dump()
-    event_dict["participant_count"] = participant_count
-
-    return EventResponse(**event_dict)
+    logger.info(f"Admin {admin.id} updated event {event_id}")
+    return (await with_participants(session, [event]))[0]
 
 
 @router.delete(
     "/events/{event_id}",
-    summary="Delete event",
-    description="Permanently deletes an event and all its data."
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an event",
+    description="Also deletes its pairs, so they no longer count for avoiding repeats.",
 )
-async def delete_event(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    logger.info(f"Admin {current_admin.email} deleting event ID: {event_id}")
-
-    statement = select(Event).where(Event.id == event_id)
-    result = await session.exec(statement)
-    event = result.first()
-
-    if not event:
-        logger.warning(f"Delete failed: Event ID {event_id} not found")
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    event_name = event.event_name
+async def delete_event(event_id: int, admin: AdminUser, session: SessionDep):
+    event = await get_event(session, event_id)
     await session.delete(event)
     await session.commit()
-
-    logger.info(f"Event deleted successfully: {event_name} (ID: {event_id})")
-    return {"message": "Event deleted successfully"}
+    logger.info(f"Admin {admin.id} deleted event {event_id} ({event.name}, {event.date})")
 
 
-@router.get("/event-names", response_model=List[EventNameResponse])
-async def get_event_names(
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Get all event names (admin only)"""
-    statement = select(EventName)
-    result = await session.exec(statement)
-    event_names = result.all()
-    return [EventNameResponse.model_validate(name) for name in event_names]
-
-
-@router.post("/event-names", response_model=EventNameResponse)
-async def create_event_name(
-    event_name_data: EventNameCreate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Create a new event name type (admin only)"""
-    statement = select(EventName).where(EventName.name == event_name_data.name)
-    result = await session.exec(statement)
-    if result.first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Event name already exists"
-        )
-
-    event_name = EventName(name=event_name_data.name)
-    session.add(event_name)
-    await session.commit()
-    await session.refresh(event_name)
-
-    return EventNameResponse.model_validate(event_name)
-
-
-@router.post(
-    "/events/{event_id}/assign",
-    summary="Assign Secret Santa pairs",
-    description="Triggers Secret Santa assignment. Can specify events to avoid repeats."
+@router.put(
+    "/events/{event_id}/participants/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Add a user to an event",
 )
-async def assign_event(
-    event_id: int,
-    assignment_request: AssignmentRequest = None,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    logger.info(f"Admin {current_admin.email} triggering assignment for event ID: {event_id}")
-
-    if assignment_request is None:
-        assignment_request = AssignmentRequest()
-
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        logger.warning(f"Assignment failed: Event ID {event_id} not found")
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    participants_statement = select(Receiver).where(Receiver.event_id == event_id)
-    participants_result = await session.exec(participants_statement)
-    participants = participants_result.all()
-
-    if len(participants) < 2:
-        logger.warning(f"Assignment failed: Event ID {event_id} has only {len(participants)} participants")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Need at least 2 participants to assign"
-        )
-
-    success = await assign_secret_santa(
-        session,
-        event_id,
-        participants,
-        history_event_ids=assignment_request.history_event_ids
-    )
-
-    if not success:
-        logger.error(f"Assignment algorithm failed for event ID: {event_id}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to assign Secret Santa pairs"
-        )
-
-    event.status = EventStatus.ASSIGNED
-    await session.commit()
-
-    logger.info(
-        f"Assignment successful for event {event.event_name} (ID: {event_id}), "
-        f"{len(participants)} participants"
-    )
-    return {
-        "message": "Secret Santa pairs assigned successfully",
-        "event_id": event_id,
-        "participants_assigned": len(participants)
-    }
-
-
-@router.post(
-    "/events/{event_id}/assign-manual",
-    summary="Manually assign Secret Santa pairs",
-    description="Set specific gifter-recipient pairs manually instead of automatic assignment."
-)
-async def assign_event_manually(
-    event_id: int,
-    assignments: ManualAssignmentBatch,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """
-    Manually assign Secret Santa pairs.
-
-    This allows you to specify exactly who gives to whom.
-    All participants must be included in the assignments.
-    """
-    # Verify event exists
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    # Get all participants
-    participants_statement = select(Receiver).where(Receiver.event_id == event_id)
-    participants_result = await session.exec(participants_statement)
-    participants = participants_result.all()
-
-    if len(participants) < 2:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Need at least 2 participants to assign"
-        )
-
-    # Validate assignments
-    participant_ids = {p.user_id for p in participants}
-    assignment_recipients = {a.recipient_user_id for a in assignments.assignments}
-    assignment_gifters = {a.gifter_user_id for a in assignments.assignments}
-
-    # Check all participants are recipients
-    if assignment_recipients != participant_ids:
-        missing = participant_ids - assignment_recipients
-        extra = assignment_recipients - participant_ids
-        error_msg = "Assignment mismatch: "
-        if missing:
-            error_msg += f"Missing recipients: {missing}. "
-        if extra:
-            error_msg += f"Extra recipients not in event: {extra}."
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg
-        )
-
-    # Check all gifters are participants
-    if not assignment_gifters.issubset(participant_ids):
-        invalid = assignment_gifters - participant_ids
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid gifters (not participants): {invalid}"
-        )
-
-    # Check no self-assignments
-    for assignment in assignments.assignments:
-        if assignment.recipient_user_id == assignment.gifter_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Self-assignment not allowed: user {assignment.recipient_user_id}"
-            )
-
-    # Check each person appears as gifter exactly once
-    if len(assignment_gifters) != len(assignments.assignments):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Each participant must be a gifter exactly once"
-        )
-
-    # Apply assignments
-    for assignment in assignments.assignments:
-        receiver_statement = select(Receiver).where(
-            Receiver.event_id == event_id,
-            Receiver.user_id == assignment.recipient_user_id
-        )
-        receiver_result = await session.exec(receiver_statement)
-        receiver = receiver_result.first()
-
-        if receiver:
-            receiver.gifter_id = assignment.gifter_user_id
-
-    # Update event status
-    event.status = EventStatus.ASSIGNED
-    await session.commit()
-
-    return {
-        "message": "Manual assignments completed successfully",
-        "event_id": event_id,
-        "assignments_count": len(assignments.assignments)
-    }
-
-
-@router.post("/events/{event_id}/close")
-async def close_event(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Close an event (admin only)"""
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    event.status = EventStatus.CLOSED
-    await session.commit()
-
-    return {"message": "Event closed successfully"}
-
-
-@router.post("/events/{event_id}/reopen")
-async def reopen_event(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Reopen a closed event (admin only)"""
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    if event.status == EventStatus.CLOSED:
-        event.status = EventStatus.ASSIGNED  # or OPEN depending on if assignments exist
-        assignments_statement = select(Receiver).where(
-            Receiver.event_id == event_id,
-            Receiver.gifter_id.is_not(None)
-        )
-        assignments_result = await session.exec(assignments_statement)
-        assignments = assignments_result.all()
-
-        if not assignments:
-            event.status = EventStatus.OPEN
-
+async def add_participant(event_id: int, user_id: int, admin: AdminUser, session: SessionDep):
+    event = await get_event(session, event_id)
+    require_not_drawn(event)
+    await get_user(session, user_id)
+    if await get_participant(session, event_id, user_id) is None:
+        session.add(Participant(event_id=event_id, user_id=user_id))
         await session.commit()
-
-    return {"message": "Event reopened successfully"}
-
-
-@router.get("/events/{event_id}/statistics")
-async def get_event_stats(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Get detailed event statistics (admin only)"""
-    statistics = await get_event_statistics(session, event_id)
-
-    if not statistics:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    return statistics
+        logger.info(f"Admin {admin.id} added user {user_id} to event {event_id}")
 
 
-@router.get("/events/{event_id}/history")
-async def get_assignment_history(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Get assignment history for this event name (admin only)"""
-    history = await get_assignment_history_info(session, event_id)
-
-    if not history:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    return history
-
-
-@router.get("/events/{event_id}/matching-participant-events")
-async def get_events_with_matching_participants(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """
-    Find all events that have the exact same participants as the specified event.
-    Useful for avoiding repeat assignments across recurring events.
-    """
-    # Get current event
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    # Get participants of the current event
-    participants_statement = select(Receiver.user_id).where(Receiver.event_id == event_id)
-    participants_result = await session.exec(participants_statement)
-    current_participants = set(participants_result.all())
-
-    if len(current_participants) == 0:
-        return {
-            "event_id": event_id,
-            "participant_count": 0,
-            "matching_events": []
-        }
-
-    # Get all other events with assignments (assigned or closed)
-    all_events_statement = select(Event).where(
-        Event.id != event_id,
-        Event.status.in_([EventStatus.ASSIGNED, EventStatus.CLOSED])
-    )
-    all_events_result = await session.exec(all_events_statement)
-    all_events = all_events_result.all()
-
-    matching_events = []
-
-    for other_event in all_events:
-        # Get participants of this event
-        other_participants_statement = select(Receiver.user_id).where(
-            Receiver.event_id == other_event.id
-        )
-        other_participants_result = await session.exec(other_participants_statement)
-        other_participants = set(other_participants_result.all())
-
-        # Check if participant sets match exactly
-        if current_participants == other_participants:
-            matching_events.append({
-                "event_id": other_event.id,
-                "event_name": other_event.event_name,
-                "event_date": other_event.date,
-                "status": other_event.status
-            })
-
-    # Sort by date (most recent first)
-    matching_events.sort(key=lambda x: x["event_date"], reverse=True)
-
-    return {
-        "event_id": event_id,
-        "participant_count": len(current_participants),
-        "matching_events": matching_events,
-        "matching_count": len(matching_events)
-    }
-
-
-@router.get(
-    "/events/{event_id}/participants-without-messages",
-    summary="Get participants without messages",
-    description="Returns participants who haven't written their messages yet."
+@router.delete(
+    "/events/{event_id}/participants/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a user from an event",
 )
-async def get_participants_without_messages(
-    event_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    participants_statement = select(Receiver, User).join(User, Receiver.user_id == User.id).where(
-        Receiver.event_id == event_id,
-        Receiver.message.is_(None)
-    )
-    participants_result = await session.exec(participants_statement)
-    participants_data = participants_result.all()
-
-    participants_without_messages = []
-    for receiver, user in participants_data:
-        participants_without_messages.append({
-            "user_id": user.id,
-            "user_name": user.name,
-            "email": user.email
-        })
-
-    return {
-        "event_id": event_id,
-        "participants_without_messages": participants_without_messages,
-        "count": len(participants_without_messages)
-    }
-
-
-@router.post(
-    "/events/{event_id}/add-participant",
-    status_code=status.HTTP_201_CREATED,
-    summary="Add participant to event",
-    description="Adds a user as a participant to the specified event."
-)
-async def add_participant_to_event(
-    event_id: int,
-    user_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    logger.info(f"Admin {current_admin.email} adding user ID {user_id} to event ID {event_id}")
-
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        logger.warning(f"Add participant failed: Event ID {event_id} not found")
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    user_statement = select(User).where(User.id == user_id)
-    user_result = await session.exec(user_statement)
-    user = user_result.first()
-
-    if not user:
-        logger.warning(f"Add participant failed: User ID {user_id} not found")
-        raise HTTPException(status_code=404, detail="User not found")
-
-    participant_statement = select(Receiver).where(
-        Receiver.user_id == user_id,
-        Receiver.event_id == event_id
-    )
-    participant_result = await session.exec(participant_statement)
-    if participant_result.first():
-        logger.warning(f"Add participant failed: User {user.email} already in event ID {event_id}")
+async def remove_participant(event_id: int, user_id: int, admin: AdminUser, session: SessionDep):
+    event = await get_event(session, event_id)
+    require_not_drawn(event)
+    participant = await get_participant(session, event_id, user_id)
+    if participant is None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is already participating in this event"
-        )
-
-    receiver = Receiver(
-        user_id=user_id,
-        event_id=event_id
-    )
-
-    session.add(receiver)
-    await session.commit()
-
-    await check_and_update_event_status(session, event_id)
-
-    logger.info(f"User {user.email} added to event {event.event_name} successfully")
-    return {
-        "message": f"User {user.name} added to event successfully",
-        "user_id": user_id,
-        "event_id": event_id
-    }
-
-
-@router.delete("/events/{event_id}/participants/{user_id}")
-async def remove_participant_from_event(
-    event_id: int,
-    user_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """Remove a user from an event (admin only)"""
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    if event.status in [EventStatus.ASSIGNED, EventStatus.CLOSED]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot remove participants from assigned or closed events"
-        )
-
-    participant_statement = select(Receiver).where(
-        Receiver.user_id == user_id,
-        Receiver.event_id == event_id
-    )
-    participant_result = await session.exec(participant_statement)
-    participant = participant_result.first()
-
-    if not participant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User is not participating in this event"
+            status_code=status.HTTP_404_NOT_FOUND, detail="The user is not in this event"
         )
 
     await session.delete(participant)
     await session.commit()
+    logger.info(f"Admin {admin.id} removed user {user_id} from event {event_id}")
 
-    return {"message": "Participant removed successfully"}
 
-
-@router.put(
-    "/events/{event_id}/participants/{user_id}/message",
-    summary="Update participant message",
-    description="Admin can update or clear a participant's message for an event."
+@router.post(
+    "/events/{event_id}/draw",
+    response_model=DrawResponse,
+    summary="Draw who gives a gift to whom",
+    description=(
+        "Nobody gets someone they had in their last 2 events. If that is impossible, fewer "
+        "events are avoided. The result is only shown to each gifter, not to the admin."
+    ),
 )
-async def update_participant_message(
-    event_id: int,
-    user_id: int,
-    message_data: AdminParticipantMessageUpdate,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """
-    Update a participant's message (admin only).
-
-    This allows admins to:
-    - Edit participant messages (e.g., fix typos, moderate content)
-    - Add messages for participants who need help
-    - Clear messages by setting to null
-    """
-    # Verify event exists
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    # Find the participant
-    participant_statement = select(Receiver).where(
-        Receiver.user_id == user_id,
-        Receiver.event_id == event_id
+async def draw_event(event_id: int, admin: AdminUser, session: SessionDep):
+    event = await get_event(session, event_id)
+    require_not_drawn(event)
+    participants = list(
+        (await session.exec(select(Participant).where(Participant.event_id == event_id))).all()
     )
-    participant_result = await session.exec(participant_statement)
-    participant = participant_result.first()
-
-    if not participant:
+    if len(participants) < 2:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User is not participating in this event"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="The draw needs at least 2 participants"
         )
 
-    # Update the message
-    participant.message = message_data.message
-    await session.commit()
-
-    return {
-        "message": "Participant message updated successfully",
-        "user_id": user_id,
-        "event_id": event_id,
-        "new_message": message_data.message
-    }
+    history_events = await draw(session, event, participants)
+    logger.info(f"Admin {admin.id} started the draw for event {event_id}")
+    return DrawResponse(
+        event_id=event_id,
+        participant_count=len(participants),
+        history_events_avoided=history_events,
+    )
 
 
 @router.delete(
-    "/events/{event_id}/participants/{user_id}/message",
-    summary="Delete participant message",
-    description="Admin can delete/clear a participant's message for an event."
+    "/events/{event_id}/draw",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Undo the draw",
+    description=(
+        "Clears the pairs so people can join or leave again. Not possible once the event is over, "
+        "because past pairs are needed to avoid repeats."
+    ),
 )
-async def delete_participant_message(
-    event_id: int,
-    user_id: int,
-    current_admin: User = Depends(get_admin_user),
-    session: Session = Depends(get_session)
-):
-    """
-    Delete a participant's message (admin only).
-
-    Sets the message to null, effectively clearing it.
-    """
-    # Verify event exists
-    event_statement = select(Event).where(Event.id == event_id)
-    event_result = await session.exec(event_statement)
-    event = event_result.first()
-
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    # Find the participant
-    participant_statement = select(Receiver).where(
-        Receiver.user_id == user_id,
-        Receiver.event_id == event_id
-    )
-    participant_result = await session.exec(participant_statement)
-    participant = participant_result.first()
-
-    if not participant:
+async def reset_draw(event_id: int, admin: AdminUser, session: SessionDep):
+    event = await get_event(session, event_id)
+    if event.drawn_at is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User is not participating in this event"
+            status_code=status.HTTP_409_CONFLICT, detail="The event is not drawn yet"
         )
+    if event.date < dt.date.today():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The event is over")
 
-    # Clear the message
-    participant.message = None
+    participants = await session.exec(select(Participant).where(Participant.event_id == event_id))
+    for participant in participants:
+        participant.recipient_id = None
+    event.drawn_at = None
     await session.commit()
-
-    return {
-        "message": "Participant message deleted successfully",
-        "user_id": user_id,
-        "event_id": event_id
-    }
+    logger.info(f"Admin {admin.id} reset the draw for event {event_id}")

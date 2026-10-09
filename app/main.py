@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from .config import settings
 from .database import init_db
 from .logging_config import setup_logging
-from .routers import admin, auth, users
+from .routers import admin, auth, events, me
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -39,7 +39,8 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
-app.include_router(users.router)
+app.include_router(me.router)
+app.include_router(events.router)
 app.include_router(admin.router)
 
 

@@ -1,41 +1,29 @@
 services:
   backend:
+    image: ghcr.io/zockerei/secret-santa-backend:latest
     container_name: secret-santa-backend
     restart: unless-stopped
-    
-    image: ghcr.io/zockerei/secret-santa-backend:main
     pull_policy: always
-    
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - SECRET_KEY=${SECRET_KEY}
-      - DEBUG=false
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CORS_ORIGINS=${CORS_ORIGINS}
-      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
-      - INITIAL_ADMIN_EMAIL=${INITIAL_ADMIN_EMAIL}
-      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}
-      - INITIAL_ADMIN_NAME=${INITIAL_ADMIN_NAME}
-    
+    env_file: .env
+
     volumes:
-      - ./logs:/app/logs
-    
+      - logs:/app/logs
+
     networks:
       br0:
-        ipv4_address: ${BACKEND_IP}
-    
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    
+        ipv4_address: ${BACKEND_IP:?Set BACKEND_IP in .env}
+
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+volumes:
+  logs:
 
 networks:
   br0:

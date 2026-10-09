@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 from contextlib import asynccontextmanager
 
-from .config import settings, setup_logging
+from .config import settings
+from .logging_config import setup_logging
 from .database import init_db
 from .routers import auth, admin, users
 

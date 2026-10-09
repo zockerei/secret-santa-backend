@@ -1,12 +1,13 @@
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import text
 from typing import AsyncGenerator
-from sqlmodel import SQLModel, select
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+import asyncio
 import logging
 
 from .config import settings
+from .migrate import migrate
 
 
 logger = logging.getLogger(__name__)
@@ -101,23 +102,8 @@ async def create_initial_admin():
 
 
 async def init_db():
-    """
-    Initialize database by creating all tables.
-    This runs automatically on application startup.
-    """
-    try:
-        logger.info("Initializing database...")
-        async with engine.begin() as conn:
-            await conn.run_sync(SQLModel.metadata.create_all)
-
-            result = await conn.execute(text("SELECT 1"))
-            if result.scalar():
-                logger.info("Database initialized successfully")
-            else:
-                logger.error("Database connection test failed")
-
-        await create_initial_admin()
-
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        raise
+    """Bring the schema up to date and create the initial admin. Runs on application startup."""
+    logger.info("Migrating database...")
+    # Alembic is synchronous, so it runs in a thread instead of blocking the event loop
+    await asyncio.to_thread(migrate)
+    await create_initial_admin()

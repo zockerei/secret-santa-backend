@@ -20,7 +20,9 @@ LOG_BACKUP_COUNT = 5
 
 # Library loggers that get noisy below these levels.
 # uvicorn.access logs every request at INFO, including the health check every 30 seconds.
+# alembic logs its setup steps at INFO, app.migrate logs the result instead.
 LIBRARY_MIN_LEVELS = {
+    "alembic": logging.WARNING,
     "sqlalchemy": logging.WARNING,
     "asyncio": logging.WARNING,
     "uvicorn.access": logging.WARNING,

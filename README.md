@@ -29,12 +29,13 @@ Copy `.env.example` to `.env` and fill it in:
 ```
 DATABASE_URL=postgresql://user:password@host:5432/database
 SECRET_KEY=a_long_random_string
-CORS_ORIGINS=https://your-frontend.example.com
 ```
 
 To create the first admin, also set `INITIAL_ADMIN_NAME`, `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD`. The admin is only created if there is no admin yet.
 
 **On the NAS** (Docker): `docker compose up -d`. GitHub Actions builds the image on every push to `main` and Watchtower updates it. Also set `BACKEND_IP` for the `br0` network.
+
+The backend stays on the LAN and is not published to the internet. The frontend's nginx forwards `/api` to it, so the browser only ever talks to the frontend (no CORS needed). The interactive docs are at `http://<BACKEND_IP>:8000/docs`.
 
 **Locally** (Windows): `run.bat` creates a virtual environment, installs the packages and starts the API with auto reload. The interactive docs are at http://localhost:8000/docs.
 

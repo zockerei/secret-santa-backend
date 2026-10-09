@@ -20,7 +20,7 @@ async def login(credentials: LoginRequest, session: SessionDep):
         logger.warning(f"Login blocked, too many failed attempts: {email}")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed logins, try again in 15 minutes",
+            detail="Zu viele falsche Anmeldungen, versuch es in 15 Minuten nochmal",
         )
 
     user = await authenticate(session, email, credentials.password)
@@ -29,7 +29,7 @@ async def login(credentials: LoginRequest, session: SessionDep):
         logger.warning(f"Failed login: {email}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="E-Mail oder Passwort ist falsch",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

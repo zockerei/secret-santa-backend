@@ -2,10 +2,8 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from .config import settings
 from .database import init_db
 from .logging_config import setup_logging
 from .routers import admin, auth, events, me
@@ -29,13 +27,6 @@ app = FastAPI(
     description="Backend for a family Secret Santa: events, wish lists and the draw.",
     version=VERSION,
     lifespan=lifespan,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(auth.router)

@@ -8,7 +8,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 def _check_password_bytes(password: str) -> str:
     # bcrypt only uses 72 bytes, so longer passwords are refused instead of silently cut off
     if len(password.encode()) > 72:
-        raise ValueError("Password is too long")
+        raise ValueError("Das Passwort ist zu lang")
     return password
 
 

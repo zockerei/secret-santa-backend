@@ -65,7 +65,7 @@ async def update_user(user_id: int, update: UserUpdate, admin: AdminUser, sessio
     if user.id == admin.id and update.is_admin is False:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You can't take away your own admin rights",
+            detail="Du kannst dir die Admin-Rechte nicht selbst entziehen",
         )
 
     if update.email is not None and update.email != user.email:
@@ -89,7 +89,7 @@ async def delete_user(user_id: int, admin: AdminUser, session: SessionDep):
     user = await get_user(session, user_id)
     if user.id == admin.id:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="You can't delete yourself"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Du kannst dich nicht selbst löschen"
         )
 
     # Deleting them would leave someone without a gift
@@ -105,7 +105,7 @@ async def delete_user(user_id: int, admin: AdminUser, session: SessionDep):
     if upcoming_drawn.first() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="The user is in an upcoming event that is already drawn, reset that draw first",
+            detail="Der Benutzer ist in einer ausgelosten Veranstaltung, erst Auslosung zurücksetzen",
         )
 
     await session.delete(user)
@@ -222,7 +222,8 @@ async def remove_participant(event_id: int, user_id: int, admin: AdminUser, sess
     participant = await get_participant(session, event_id, user_id)
     if participant is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="The user is not in this event"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Der Benutzer ist nicht in dieser Veranstaltung",
         )
 
     await session.delete(participant)
@@ -247,7 +248,8 @@ async def draw_event(event_id: int, admin: AdminUser, session: SessionDep):
     )
     if len(participants) < 2:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="The draw needs at least 2 participants"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Zum Auslosen braucht es mindestens 2 Teilnehmer",
         )
 
     history_events = await draw(session, event, participants)
@@ -272,10 +274,13 @@ async def reset_draw(event_id: int, admin: AdminUser, session: SessionDep):
     event = await get_event(session, event_id)
     if event.drawn_at is None:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="The event is not drawn yet"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Die Veranstaltung ist noch nicht ausgelost",
         )
     if event.date < dt.date.today():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The event is over")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Die Veranstaltung ist vorbei"
+        )
 
     participants = await session.exec(select(Participant).where(Participant.event_id == event_id))
     for participant in participants:

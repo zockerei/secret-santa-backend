@@ -98,7 +98,7 @@ async def get_current_user(
     """The user the bearer token belongs to."""
     invalid = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Bitte melde dich neu an",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
@@ -118,7 +118,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 async def get_admin_user(user: CurrentUser) -> User:
     if not user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins only")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Nur für Admins")
     return user
 
 

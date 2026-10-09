@@ -79,7 +79,7 @@ async def join_event(event_id: int, user: CurrentUser, session: SessionDep):
     require_not_drawn(event)
     if await get_participant(session, event_id, user.id):
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="You already joined this event"
+            status_code=status.HTTP_409_CONFLICT, detail="Du bist schon dabei"
         )
 
     session.add(Participant(event_id=event_id, user_id=user.id))
@@ -94,7 +94,7 @@ async def leave_event(event_id: int, user: CurrentUser, session: SessionDep):
     participant = await get_participant(session, event_id, user.id)
     if participant is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="You are not in this event"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Du bist nicht in dieser Veranstaltung"
         )
 
     await session.delete(participant)
@@ -113,11 +113,13 @@ async def update_message(
 ):
     event = await get_event(session, event_id)
     if event.date < dt.date.today():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The event is over")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Die Veranstaltung ist vorbei"
+        )
     participant = await get_participant(session, event_id, user.id)
     if participant is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="You are not in this event"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Du bist nicht in dieser Veranstaltung"
         )
 
     participant.message = update.message or None
